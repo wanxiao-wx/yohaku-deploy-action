@@ -150,11 +150,6 @@ jobs:
       - name: Checkout deploy action repo
         uses: actions/checkout@v4
 
-      # - name: Download artifact
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: dist
-
       - name: Restore cached Build Artifacts
         id: cache-primes-restore
         uses: actions/cache/restore@v4
@@ -162,77 +157,62 @@ jobs:
           path: |
             assets
           key: ${{ github.run_number }}-release
+
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
       - name: Prepare standalone PM2 config
         run: cp pm2/ecosystem.config.js ecosystem.config.js
 
-      - name: copy file via ssh password
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          source: 'release.zip'
-          target: '/tmp/yohaku'
-
-      - name: copy PM2 config via ssh password
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          source: 'ecosystem.config.js'
-          target: '/tmp/yohaku'
-
-      - name: Exec deploy script with SSH
-        uses: appleboy/ssh-action@master
-
-        with:
-          command_timeout: 5m
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          script: |
-            set -e
-            source $HOME/.bashrc
-            basedir=$HOME/yohaku
-            workdir=$basedir/${{ github.run_number }}
-            mkdir -p $workdir
-            mkdir -p $basedir/.cache
-            mv /tmp/yohaku/release.zip $workdir/release.zip
-            install -m 644 /tmp/yohaku/ecosystem.config.js $basedir/ecosystem.config.js
-            cd $workdir
-            unzip -qq -o $workdir/release.zip
-            rm -r /tmp/yohaku
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-            ln -s $HOME/yohaku/.env $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-            export NEXT_SHARP_PATH=$(npm root -g)/sharp
-            # https://github.com/Unitech/pm2/issues/3054
-            # symlink workdir node entry file to basedir
-            ln -sf $workdir/${{ env.STANDALONE_SUBPATH }}/server.js $basedir/server.js
-            mkdir -p $workdir/${{ env.STANDALONE_SUBPATH }}/.next
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
-            ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
-            cd $basedir
-            if pm2 describe Yohaku >/dev/null 2>&1; then
-              pm2 reload ecosystem.config.js --update-env
-            else
-              pm2 start ecosystem.config.js --update-env
-            fi
-            rm $workdir/release.zip
-            pm2 save
-            echo "Deployed successfully"
+      - name: Upload and deploy via SSH password
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.USER }}
+          SSH_PASSWORD: ${{ secrets.PASSWORD }}
+          SSH_PORT: ${{ secrets.PORT }}
+          RUN_NUMBER: ${{ github.run_number }}
+          STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass unzip
+          SSH_BASE="sshpass -p $SSH_PASSWORD ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -p $SSH_PORT $SSH_USER@$SSH_HOST"
+          SCP_BASE="sshpass -p $SSH_PASSWORD scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -P $SSH_PORT"
+          $SSH_BASE 'rm -rf /tmp/yohaku && mkdir -p /tmp/yohaku'
+          $SCP_BASE release.zip ecosystem.config.js "$SSH_USER@$SSH_HOST:/tmp/yohaku/"
+          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          basedir=$HOME/yohaku
+          workdir=$basedir/$RUN_NUMBER
+          mkdir -p "$workdir" "$basedir/.cache"
+          mv /tmp/yohaku/release.zip "$workdir/release.zip"
+          install -m 644 /tmp/yohaku/ecosystem.config.js "$basedir/ecosystem.config.js"
+          cd "$workdir"
+          unzip -qq -o "$workdir/release.zip"
+          rm -rf /tmp/yohaku
+          rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
+          ln -s "$HOME/yohaku/.env" "$workdir/$STANDALONE_SUBPATH/.env"
+          export NEXT_SHARP_PATH="$(npm root -g)/sharp"
+          ln -sf "$workdir/$STANDALONE_SUBPATH/server.js" "$basedir/server.js"
+          mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
+          rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          ln -sf "$basedir/.cache" "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          cd "$basedir"
+          if pm2 describe Yohaku >/dev/null 2>&1; then
+            pm2 reload ecosystem.config.js --update-env
+          else
+            pm2 start ecosystem.config.js --update-env
+          fi
+          rm "$workdir/release.zip"
+          pm2 save
+          echo "Deployed successfully"
+          REMOTE
 
       - name: After deploy script
         run: |
           hash=${{ needs.build.outputs.sha_short }}
-          # curl -X "POST" "https://mx.innei.in/api/v2/fn/shiro/new-version-hook" -H 'Content-Type: application/json' -d "{\"hash\": \"$hash\", \"key\": \"\"}"
           ${{ secrets.AFTER_DEPLOY_SCRIPT }}
+
   store:
     name: Store artifact commit version
     runs-on: ubuntu-latest
