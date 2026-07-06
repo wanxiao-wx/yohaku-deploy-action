@@ -174,7 +174,6 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
           password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
           port: ${{ secrets.PORT }}
           source: 'release.zip'
           target: '/tmp/yohaku'
@@ -185,7 +184,6 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
           password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
           port: ${{ secrets.PORT }}
           source: 'ecosystem.config.js'
           target: '/tmp/yohaku'
@@ -198,7 +196,6 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
           password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
           port: ${{ secrets.PORT }}
           script: |
             set -e
