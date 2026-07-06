@@ -121,11 +121,12 @@ jobs:
           rm -f assets/release.zip
           (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/assets/release.zip" ./* -x "dev/*" -x "cache/*")
 
-      # - uses: actions/upload-artifact@v4
-      #   with:
-      #     name: dist
-      #     path: assets/release.zip
-      #     retention-days: 7
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yohaku-release
+          path: assets/release.zip
+          retention-days: 1
       - name: Cache Build Artifacts
         id: cache-primes
         uses: actions/cache/save@v4
@@ -147,49 +148,70 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Checkout deploy action repo
-        uses: actions/checkout@v4
-
-      - name: Restore cached Build Artifacts
-        id: cache-primes-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            assets
-          key: ${{ github.run_number }}-release
-
-      - name: Move assets to root
-        run: mv assets/release.zip release.zip
-
-      - name: Prepare standalone PM2 config
-        run: cp pm2/ecosystem.config.js ecosystem.config.js
-
-      - name: Upload and deploy via SSH password
+      - name: Deploy by remote artifact download
         env:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
           SSH_PASSWORD: ${{ secrets.PASSWORD }}
           SSH_PORT: ${{ secrets.PORT }}
           RUN_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
           STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y sshpass unzip
+          sudo apt-get install -y sshpass
           SSH_BASE="sshpass -p $SSH_PASSWORD ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -p $SSH_PORT $SSH_USER@$SSH_HOST"
-          SCP_BASE="sshpass -p $SSH_PASSWORD scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -P $SSH_PORT"
-          $SSH_BASE 'rm -rf /tmp/yohaku && mkdir -p /tmp/yohaku'
-          $SCP_BASE release.zip ecosystem.config.js "$SSH_USER@$SSH_HOST:/tmp/yohaku/"
-          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' bash -s" <<'REMOTE'
+          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' RUN_ID='$RUN_ID' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' GH_PAT='$GH_PAT' bash -s" <<'REMOTE'
           set -euo pipefail
           basedir=$HOME/yohaku
           workdir=$basedir/$RUN_NUMBER
           mkdir -p "$workdir" "$basedir/.cache"
-          mv /tmp/yohaku/release.zip "$workdir/release.zip"
-          install -m 644 /tmp/yohaku/ecosystem.config.js "$basedir/ecosystem.config.js"
+          cat > "$basedir/ecosystem.config.js" <<'PM2CFG'
+          module.exports = {
+            apps: [
+              {
+                name: 'Yohaku',
+                script: './server.js',
+                cwd: __dirname,
+                exec_mode: 'fork',
+                instances: 1,
+                autorestart: true,
+                watch: false,
+                max_memory_restart: '180M',
+                env: {
+                  NODE_ENV: 'production',
+                  HOSTNAME: '0.0.0.0',
+                  PORT: process.env.PORT || 2323,
+                },
+                log_date_format: 'YYYY-MM-DD HH:mm:ss',
+                merge_logs: true,
+              },
+            ],
+          }
+          PM2CFG
+          artifacts_json="$workdir/artifacts.json"
+          artifact_archive="$workdir/yohaku-release-artifact.zip"
+          curl -fsSL             -H "Authorization: Bearer $GH_PAT"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/wanxiao-wx/yohaku-deploy-action/actions/runs/$RUN_ID/artifacts?per_page=100"             -o "$artifacts_json"
+          archive_url=$(python3 - "$artifacts_json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          for artifact in data.get('artifacts', []):
+              if artifact.get('name') == 'yohaku-release':
+                  print(artifact['archive_download_url'])
+                  break
+          else:
+              raise SystemExit('yohaku-release artifact not found')
+          PY
+          )
+          curl -fL             -H "Authorization: Bearer $GH_PAT"             -H "Accept: application/vnd.github+json"             "$archive_url"             -o "$artifact_archive"
+          mkdir -p "$workdir/artifact"
+          unzip -qq -o "$artifact_archive" -d "$workdir/artifact"
+          mv "$workdir/artifact/release.zip" "$workdir/release.zip"
           cd "$workdir"
           unzip -qq -o "$workdir/release.zip"
-          rm -rf /tmp/yohaku
+          rm -rf "$workdir/artifact" "$artifact_archive" "$artifacts_json"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
           ln -s "$HOME/yohaku/.env" "$workdir/$STANDALONE_SUBPATH/.env"
           export NEXT_SHARP_PATH="$(npm root -g)/sharp"
