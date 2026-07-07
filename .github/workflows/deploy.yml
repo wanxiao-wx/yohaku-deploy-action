@@ -4,9 +4,7 @@ on:
   push:
     branches:
       - main
-  # schedule:
-  #   - cron: '0 3 * * *'
-
+  workflow_dispatch:
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -20,16 +18,15 @@ env:
   SOURCE_REPO: innei-dev/Yohaku
   BUILD_COMMAND: pnpm --filter @yohaku/web build:ci
   STANDALONE_SUBPATH: standalone/apps/web
+  DEPLOY_BASE_DIR: /opt/yohaku
 
 jobs:
   prepare:
     name: Prepare
     runs-on: ubuntu-latest
     if: ${{ github.event.head_commit.message != 'Update hash file' }}
-
     outputs:
       hash_content: ${{ steps.read_hash.outputs.hash_content }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,22 +35,21 @@ jobs:
         run: |
           content=$(cat ${{ env.HASH_FILE }}) || true
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check Should Rebuild
     runs-on: ubuntu-latest
     needs: prepare
     outputs:
       canceled: ${{ steps.use_content.outputs.canceled }}
-
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: innei-dev/Yohaku
-          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
           submodules: recursive
-
       - name: Use content from prev job and compare
         id: use_content
         env:
@@ -65,7 +61,7 @@ jobs:
           echo "Current Git Hash: $current_hash"
           if [ "$file_hash" == "$current_hash" ]; then
             echo "Hashes match. Stopping workflow."
-            echo "canceled=true" >> $GITHUB_OUTPUT
+            echo "canceled=true" >> "$GITHUB_OUTPUT"
           else
             echo "Hashes do not match. Continuing workflow."
           fi
@@ -74,8 +70,7 @@ jobs:
     name: Build artifact
     runs-on: ubuntu-latest
     needs: check
-    if: ${{needs.check.outputs.canceled != 'true'}}
-
+    if: ${{ needs.check.outputs.canceled != 'true' }}
     strategy:
       matrix:
         node-version: [lts/*]
@@ -86,20 +81,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
-          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
+          token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
           submodules: recursive
-
       - name: Checkout LFS objects
         run: git lfs checkout
       - uses: pnpm/action-setup@v2
-
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
+          cache: pnpm
       - uses: jongwooo/next-cache@v1
       - name: Install dependencies
         run: pnpm install
@@ -120,7 +113,6 @@ jobs:
           mkdir -p assets
           rm -f assets/release.zip
           (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/assets/release.zip" ./* -x "dev/*" -x "cache/*")
-
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
@@ -133,7 +125,6 @@ jobs:
         with:
           path: assets
           key: ${{ github.run_number }}-release
-
       - name: Store artifact commit version
         shell: bash
         id: store
@@ -157,44 +148,30 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ID: ${{ github.run_id }}
           STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
+          DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y sshpass
           SSH_BASE="sshpass -p $SSH_PASSWORD ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -p $SSH_PORT $SSH_USER@$SSH_HOST"
-          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' RUN_ID='$RUN_ID' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' bash -s" <<'REMOTE'
+          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' RUN_ID='$RUN_ID' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
           set -euo pipefail
           GH_PAT='${{ secrets.GH_PAT }}'
-          basedir=$HOME/yohaku
-          workdir=$basedir/$RUN_NUMBER
-          mkdir -p "$workdir" "$basedir/.cache"
-          cat > "$basedir/ecosystem.config.js" <<'PM2CFG'
-          module.exports = {
-            apps: [
-              {
-                name: 'Yohaku',
-                script: './server.js',
-                cwd: __dirname,
-                exec_mode: 'fork',
-                instances: 1,
-                autorestart: true,
-                watch: false,
-                max_memory_restart: '180M',
-                env: {
-                  NODE_ENV: 'production',
-                  HOSTNAME: '0.0.0.0',
-                  PORT: process.env.PORT || 2323,
-                },
-                log_date_format: 'YYYY-MM-DD HH:mm:ss',
-                merge_logs: true,
-              },
-            ],
-          }
-          PM2CFG
+          basedir="$DEPLOY_BASE_DIR"
+          workdir="$basedir/releases/$RUN_NUMBER"
+          mkdir -p "$workdir" "$basedir/.cache" "$basedir/releases"
+          if ! command -v unzip >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y unzip
+          fi
           artifacts_json="$workdir/artifacts.json"
           artifact_archive="$workdir/yohaku-release-artifact.zip"
-          curl -fsSL             -H "Authorization: Bearer $GH_PAT"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/wanxiao-wx/yohaku-deploy-action/actions/runs/$RUN_ID/artifacts?per_page=100"             -o "$artifacts_json"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/wanxiao-wx/yohaku-deploy-action/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            -o "$artifacts_json"
           archive_url=$(python3 - "$artifacts_json" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1]))
@@ -206,31 +183,28 @@ jobs:
               raise SystemExit('yohaku-release artifact not found')
           PY
           )
-          curl -fL             -H "Authorization: Bearer $GH_PAT"             -H "Accept: application/vnd.github+json"             "$archive_url"             -o "$artifact_archive"
+          curl -fL \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "$archive_url" \
+            -o "$artifact_archive"
           mkdir -p "$workdir/artifact"
           unzip -qq -o "$artifact_archive" -d "$workdir/artifact"
           mv "$workdir/artifact/release.zip" "$workdir/release.zip"
           cd "$workdir"
           unzip -qq -o "$workdir/release.zip"
-          rm -rf "$workdir/artifact" "$artifact_archive" "$artifacts_json" "$curl_config"
+          rm -rf "$workdir/artifact" "$artifact_archive" "$artifacts_json" "$workdir/release.zip"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
-          ln -s "$HOME/yohaku/.env" "$workdir/$STANDALONE_SUBPATH/.env"
-          export NEXT_SHARP_PATH="$(npm root -g)/sharp"
-          ln -sf "$workdir/$STANDALONE_SUBPATH/server.js" "$basedir/server.js"
+          ln -s "$basedir/.env" "$workdir/$STANDALONE_SUBPATH/.env"
           mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          ln -sf "$basedir/.cache" "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          cd "$basedir"
-          if pm2 describe Yohaku >/dev/null 2>&1; then
-            pm2 reload ecosystem.config.js --update-env
-          else
-            pm2 start ecosystem.config.js --update-env
-          fi
-          rm "$workdir/release.zip"
-          pm2 save
-          echo "Deployed successfully"
+          ln -s "$basedir/.cache" "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          ln -sfn "$workdir/$STANDALONE_SUBPATH" "$basedir/current"
+          ln -sfn "$basedir/current/server.js" "$basedir/server.js"
+          find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
+          echo "Deployed artifact to $basedir/current"
+          echo "Start it from 1Panel with: node /opt/yohaku/server.js"
           REMOTE
-
       - name: After deploy script
         run: |
           hash=${{ needs.build.outputs.sha_short }}
@@ -244,9 +218,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          persist-credentials: false # otherwise, the token used is the GITHUB_TOKEN, instead of your personal token
-          fetch-depth: 0 # otherwise, you will failed to push refs to dest repo
-      # Get the commit version from the build job
+          persist-credentials: false
+          fetch-depth: 0
       - name: Use outputs from build
         env:
           SHA_SHORT: ${{ needs.build.outputs.sha_short }}
@@ -257,14 +230,13 @@ jobs:
       - name: Write hash to file
         env:
           SHA_SHORT: ${{ needs.build.outputs.sha_short }}
-
-        run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
+        run: echo "$SHA_SHORT" > ${{ env.HASH_FILE }}
       - name: Commit files
         run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add ${{ env.HASH_FILE }}
-          git commit -a -m "Update hash file"
+          git commit -m "Update hash file"
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
