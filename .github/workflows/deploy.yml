@@ -96,9 +96,14 @@ jobs:
       - uses: jongwooo/next-cache@v1
       - name: Install dependencies
         run: pnpm install
+      - name: Configure Mix Space admin URL
+        run: |
+          perl -0pi -e 's#atom<string \| null>\(null\)#atom<string | null>(process.env.NEXT_PUBLIC_ADMIN_URL ?? null)#' apps/web/src/atoms/url.ts
+          grep -F 'NEXT_PUBLIC_ADMIN_URL' apps/web/src/atoms/url.ts
       - name: Build project
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
+          NEXT_PUBLIC_ADMIN_URL: ${{ secrets.NEXT_PUBLIC_ADMIN_URL }}
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
