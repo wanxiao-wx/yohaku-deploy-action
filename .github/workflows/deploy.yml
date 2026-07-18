@@ -174,7 +174,7 @@ jobs:
           split -b 5m -d -a 3 deploy-artifact/release.zip deploy-artifact/chunks/part-
           export SSH_HOST SSH_USER SSH_PORT remote_parts
           find deploy-artifact/chunks -type f -name 'part-*' -print0 | \
-            xargs -0 -n1 -P20 sh -c '
+            xargs -0 -n1 -P4 sh -c '
               sshpass -e scp \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
