@@ -174,7 +174,7 @@ jobs:
           split -b 5m -d -a 3 deploy-artifact/release.zip deploy-artifact/chunks/part-
           export SSH_HOST SSH_USER SSH_PORT remote_parts
           find deploy-artifact/chunks -type f -name 'part-*' -print0 | \
-            xargs -0 -n1 -P12 sh -c '
+            xargs -0 -n1 -P20 sh -c '
               sshpass -e scp \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
@@ -202,12 +202,14 @@ jobs:
           unzip -qq -o "$workdir/release.zip"
           rm -f "$workdir/release.zip"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
-          ln -s "$basedir/.env" "$workdir/$STANDALONE_SUBPATH/.env"
+          env_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH" "$basedir/.env")
+          ln -s "$env_target" "$workdir/$STANDALONE_SUBPATH/.env"
           mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          ln -s "$basedir/.cache" "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          ln -sfn "$workdir/$STANDALONE_SUBPATH" "$basedir/current"
-          ln -sfn "$basedir/current/server.js" "$basedir/server.js"
+          cache_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH/.next" "$basedir/.cache")
+          ln -s "$cache_target" "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          ln -sfn "releases/$RUN_NUMBER/$STANDALONE_SUBPATH" "$basedir/current"
+          ln -sfn "current/server.js" "$basedir/server.js"
           find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
           echo "Deployed artifact to $basedir/current"
           echo "Start it from 1Panel with: node /opt/yohaku/server.js"
