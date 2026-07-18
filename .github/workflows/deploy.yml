@@ -144,25 +144,39 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Deploy by remote artifact download
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: yohaku-release
+          path: deploy-artifact
+      - name: Upload and deploy artifact
         env:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
           SSH_PASSWORD: ${{ secrets.PASSWORD }}
           SSH_PORT: ${{ secrets.PORT }}
           RUN_NUMBER: ${{ github.run_number }}
-          RUN_ID: ${{ github.run_id }}
           STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
           DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
-          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y sshpass
-          SSH_BASE="sshpass -p $SSH_PASSWORD ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/yohaku_known_hosts -p $SSH_PORT $SSH_USER@$SSH_HOST"
-          $SSH_BASE "RUN_NUMBER='$RUN_NUMBER' RUN_ID='$RUN_ID' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
+          export SSHPASS="$SSH_PASSWORD"
+          remote_archive="/tmp/yohaku-release-$RUN_NUMBER.zip"
+          sshpass -e scp \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -P "$SSH_PORT" \
+            deploy-artifact/release.zip \
+            "$SSH_USER@$SSH_HOST:$remote_archive"
+          sshpass -e ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "RUN_NUMBER='$RUN_NUMBER' REMOTE_ARCHIVE='$remote_archive' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
           set -euo pipefail
-          GH_PAT='${{ secrets.GH_PAT }}'
           basedir="$DEPLOY_BASE_DIR"
           workdir="$basedir/releases/$RUN_NUMBER"
           mkdir -p "$workdir" "$basedir/.cache" "$basedir/releases"
@@ -170,35 +184,10 @@ jobs:
             apt-get update
             apt-get install -y unzip
           fi
-          artifacts_json="$workdir/artifacts.json"
-          artifact_archive="$workdir/yohaku-release-artifact.zip"
-          curl -fsSL \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/wanxiao-wx/yohaku-deploy-action/actions/runs/$RUN_ID/artifacts?per_page=100" \
-            -o "$artifacts_json"
-          archive_url=$(python3 - "$artifacts_json" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1]))
-          for artifact in data.get('artifacts', []):
-              if artifact.get('name') == 'yohaku-release':
-                  print(artifact['archive_download_url'])
-                  break
-          else:
-              raise SystemExit('yohaku-release artifact not found')
-          PY
-          )
-          curl -fL \
-            -H "Authorization: Bearer $GH_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            "$archive_url" \
-            -o "$artifact_archive"
-          mkdir -p "$workdir/artifact"
-          unzip -qq -o "$artifact_archive" -d "$workdir/artifact"
-          mv "$workdir/artifact/release.zip" "$workdir/release.zip"
+          mv "$REMOTE_ARCHIVE" "$workdir/release.zip"
           cd "$workdir"
           unzip -qq -o "$workdir/release.zip"
-          rm -rf "$workdir/artifact" "$artifact_archive" "$artifacts_json" "$workdir/release.zip"
+          rm -f "$workdir/release.zip"
           rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
           ln -s "$basedir/.env" "$workdir/$STANDALONE_SUBPATH/.env"
           mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
