@@ -163,19 +163,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
           export SSHPASS="$SSH_PASSWORD"
-          remote_archive="/tmp/yohaku-release-$RUN_NUMBER.zip"
-          sshpass -e scp \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
-            -P "$SSH_PORT" \
-            deploy-artifact/release.zip \
-            "$SSH_USER@$SSH_HOST:$remote_archive"
+          remote_parts="/tmp/yohaku-upload-$RUN_NUMBER"
           sshpass -e ssh \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
             -p "$SSH_PORT" \
             "$SSH_USER@$SSH_HOST" \
-            "RUN_NUMBER='$RUN_NUMBER' REMOTE_ARCHIVE='$remote_archive' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
+            "rm -rf '$remote_parts' && mkdir -p '$remote_parts'"
+          mkdir -p deploy-artifact/chunks
+          split -b 5m -d -a 3 deploy-artifact/release.zip deploy-artifact/chunks/part-
+          export SSH_HOST SSH_USER SSH_PORT remote_parts
+          find deploy-artifact/chunks -type f -name 'part-*' -print0 | \
+            xargs -0 -n1 -P12 sh -c '
+              sshpass -e scp \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+                -P "$SSH_PORT" \
+                "$1" \
+                "$SSH_USER@$SSH_HOST:$remote_parts/"
+            ' sh
+          sshpass -e ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
           set -euo pipefail
           basedir="$DEPLOY_BASE_DIR"
           workdir="$basedir/releases/$RUN_NUMBER"
@@ -184,7 +196,8 @@ jobs:
             apt-get update
             apt-get install -y unzip
           fi
-          mv "$REMOTE_ARCHIVE" "$workdir/release.zip"
+          cat "$REMOTE_PARTS"/part-* > "$workdir/release.zip"
+          rm -rf "$REMOTE_PARTS"
           cd "$workdir"
           unzip -qq -o "$workdir/release.zip"
           rm -f "$workdir/release.zip"
