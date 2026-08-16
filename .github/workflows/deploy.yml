@@ -4,9 +4,7 @@ on:
   push:
     branches:
       - main
-  # schedule:
-  #   - cron: '0 3 * * *'
-
+  workflow_dispatch:
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -20,6 +18,7 @@ env:
   SOURCE_REPO: innei-dev/Yohaku
   BUILD_COMMAND: pnpm --filter @yohaku/web build:ci
   STANDALONE_SUBPATH: standalone/apps/web
+  DEPLOY_BASE_DIR: /opt/yohaku
 
 jobs:
   prepare:
@@ -103,9 +102,14 @@ jobs:
       - uses: jongwooo/next-cache@v1
       - name: Install dependencies
         run: pnpm install
+      - name: Configure Mix Space admin URL
+        run: |
+          perl -0pi -e 's#atom<string \| null>\(null\)#atom<string | null>(process.env.NEXT_PUBLIC_ADMIN_URL ?? null)#' apps/web/src/atoms/url.ts
+          grep -F 'NEXT_PUBLIC_ADMIN_URL' apps/web/src/atoms/url.ts
       - name: Build project
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
+          NEXT_PUBLIC_ADMIN_URL: ${{ secrets.NEXT_PUBLIC_ADMIN_URL }}
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
@@ -121,11 +125,12 @@ jobs:
           rm -f assets/release.zip
           (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/assets/release.zip" ./* -x "dev/*" -x "cache/*")
 
-      # - uses: actions/upload-artifact@v4
-      #   with:
-      #     name: dist
-      #     path: assets/release.zip
-      #     retention-days: 7
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yohaku-release
+          path: assets/release.zip
+          retention-days: 1
       - name: Cache Build Artifacts
         id: cache-primes
         uses: actions/cache/save@v4
@@ -147,91 +152,80 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      # - name: Download artifact
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: dist
-
-      - name: Restore cached Build Artifacts
-        id: cache-primes-restore
-        uses: actions/cache/restore@v4
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            assets
-          key: ${{ github.run_number }}-release
-      - name: Move assets to root
-        run: mv assets/release.zip release.zip
-
-      - name: Prepare standalone PM2 config
-        run: cp pm2/ecosystem.config.js ecosystem.config.js
-
-      - name: copy file via ssh password
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
-          port: ${{ secrets.PORT }}
-          source: 'release.zip'
-          target: '/tmp/yohaku'
-
-      - name: copy PM2 config via ssh password
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
-          port: ${{ secrets.PORT }}
-          source: 'ecosystem.config.js'
-          target: '/tmp/yohaku'
-
-      - name: Exec deploy script with SSH
-        uses: appleboy/ssh-action@master
-
-        with:
-          command_timeout: 5m
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
-          port: ${{ secrets.PORT }}
-          script: |
-            set -e
-            source $HOME/.bashrc
-            basedir=$HOME/yohaku
-            workdir=$basedir/${{ github.run_number }}
-            mkdir -p $workdir
-            mkdir -p $basedir/.cache
-            mv /tmp/yohaku/release.zip $workdir/release.zip
-            install -m 644 /tmp/yohaku/ecosystem.config.js $basedir/ecosystem.config.js
-            cd $workdir
-            unzip -qq -o $workdir/release.zip
-            rm -r /tmp/yohaku
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-            ln -s $HOME/yohaku/.env $workdir/${{ env.STANDALONE_SUBPATH }}/.env
-            export NEXT_SHARP_PATH=$(npm root -g)/sharp
-            # https://github.com/Unitech/pm2/issues/3054
-            # symlink workdir node entry file to basedir
-            ln -sf $workdir/${{ env.STANDALONE_SUBPATH }}/server.js $basedir/server.js
-            mkdir -p $workdir/${{ env.STANDALONE_SUBPATH }}/.next
-            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
-            ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
-            cd $basedir
-            if pm2 describe Yohaku >/dev/null 2>&1; then
-              pm2 reload ecosystem.config.js --update-env
-            else
-              pm2 start ecosystem.config.js --update-env
-            fi
-            rm $workdir/release.zip
-            pm2 save
-            echo "Deployed successfully"
+          name: yohaku-release
+          path: deploy-artifact
+      - name: Upload and deploy artifact
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.USER }}
+          SSH_PASSWORD: ${{ secrets.PASSWORD }}
+          SSH_PORT: ${{ secrets.PORT }}
+          RUN_NUMBER: ${{ github.run_number }}
+          STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
+          DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          remote_parts="/tmp/yohaku-upload-$RUN_NUMBER"
+          sshpass -e ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "rm -rf '$remote_parts' && mkdir -p '$remote_parts'"
+          mkdir -p deploy-artifact/chunks
+          split -b 5m -d -a 3 deploy-artifact/release.zip deploy-artifact/chunks/part-
+          export SSH_HOST SSH_USER SSH_PORT remote_parts
+          find deploy-artifact/chunks -type f -name 'part-*' -print0 | \
+            xargs -0 -n1 -P4 sh -c '
+              sshpass -e scp \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+                -P "$SSH_PORT" \
+                "$1" \
+                "$SSH_USER@$SSH_HOST:$remote_parts/"
+            ' sh
+          sshpass -e ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+          basedir="$DEPLOY_BASE_DIR"
+          workdir="$basedir/releases/$RUN_NUMBER"
+          mkdir -p "$workdir" "$basedir/.cache" "$basedir/releases"
+          if ! command -v unzip >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y unzip
+          fi
+          cat "$REMOTE_PARTS"/part-* > "$workdir/release.zip"
+          rm -rf "$REMOTE_PARTS"
+          cd "$workdir"
+          unzip -qq -o "$workdir/release.zip"
+          rm -f "$workdir/release.zip"
+          rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
+          env_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH" "$basedir/.env")
+          ln -s "$env_target" "$workdir/$STANDALONE_SUBPATH/.env"
+          mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
+          rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          cache_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH/.next" "$basedir/.cache")
+          ln -s "$cache_target" "$workdir/$STANDALONE_SUBPATH/.next/cache"
+          ln -sfn "releases/$RUN_NUMBER/$STANDALONE_SUBPATH" "$basedir/current"
+          ln -sfn "current/server.js" "$basedir/server.js"
+          find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
+          echo "Deployed artifact to $basedir/current"
+          echo "Start it from 1Panel with: node /opt/yohaku/server.js"
+          REMOTE
 
       - name: After deploy script
         run: |
           hash=${{ needs.build.outputs.sha_short }}
-          # curl -X "POST" "https://mx.innei.in/api/v2/fn/shiro/new-version-hook" -H 'Content-Type: application/json' -d "{\"hash\": \"$hash\", \"key\": \"\"}"
           ${{ secrets.AFTER_DEPLOY_SCRIPT }}
   store:
     name: Store artifact commit version
