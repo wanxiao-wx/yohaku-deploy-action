@@ -15,7 +15,7 @@ concurrency:
 
 env:
   HASH_FILE: build_hash
-  SOURCE_REPO: innei-dev/Yohaku
+  SOURCE_REPO: wanxiao-wx/yohaku-custom
   BUILD_COMMAND: pnpm --filter @yohaku/web build:ci
   STANDALONE_SUBPATH: standalone/apps/web
   DEPLOY_BASE_DIR: /opt/yohaku
@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: innei-dev/Yohaku
+          repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
