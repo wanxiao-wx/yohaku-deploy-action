@@ -15,7 +15,7 @@ concurrency:
 
 env:
   HASH_FILE: build_hash
-  SOURCE_REPO: wanxiao-wx/yohaku-custom
+  SOURCE_REPO: innei-dev/Yohaku
   BUILD_COMMAND: pnpm --filter @yohaku/web build:ci
   STANDALONE_SUBPATH: standalone/apps/web
   DEPLOY_BASE_DIR: /opt/yohaku
