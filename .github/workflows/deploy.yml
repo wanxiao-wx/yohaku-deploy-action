@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "30 19 * * *"
   workflow_dispatch:
   repository_dispatch:
     types: [trigger-workflow]
@@ -216,11 +218,46 @@ jobs:
           rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
           cache_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH/.next" "$basedir/.cache")
           ln -s "$cache_target" "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          ln -sfn "releases/$RUN_NUMBER/$STANDALONE_SUBPATH" "$basedir/current"
+          YOHaku_CONTAINER="yohaku"
+          previous_target="$(readlink "$basedir/current" 2>/dev/null || true)"
+          new_target="releases/$RUN_NUMBER/$STANDALONE_SUBPATH"
+
+          ln -sfn "$new_target" "$basedir/current"
           ln -sfn "current/server.js" "$basedir/server.js"
+
+          if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$YOHaku_CONTAINER"; then
+            echo "Yohaku container not found: $YOHaku_CONTAINER"
+            exit 1
+          fi
+
+          docker restart "$YOHaku_CONTAINER"
+
+          healthy=false
+          for attempt in $(seq 1 36); do
+            if curl -fsS --max-time 5 http://127.0.0.1:2323/ >/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$healthy" != true ]; then
+            echo "Yohaku release $RUN_NUMBER failed its local health check"
+            docker logs --tail=150 "$YOHaku_CONTAINER"
+            if [ -n "$previous_target" ]; then
+              echo "Rolling back to $previous_target"
+              ln -sfn "$previous_target" "$basedir/current"
+              docker restart "$YOHaku_CONTAINER"
+            fi
+            exit 1
+          fi
+
+          curl -fsS --max-time 15 https://shiyi.dev/ >/dev/null
+          curl -fsS --max-time 15 https://shiyi.dev/qaqdmin >/dev/null
+          curl -fsS --max-time 15 https://shiyi.dev/api/v3/ping
+
           find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
-          echo "Deployed artifact to $basedir/current"
-          echo "Start it from 1Panel with: node /opt/yohaku/server.js"
+          echo "Deployed and verified Yohaku release $RUN_NUMBER at $basedir/current"
           REMOTE
 
       - name: After deploy script
