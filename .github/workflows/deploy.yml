@@ -171,13 +171,15 @@ jobs:
           DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
         run: |
           set -euo pipefail
-          sudo apt-get update
           sudo apt-get install -y sshpass
           export SSHPASS="$SSH_PASSWORD"
           remote_parts="/tmp/yohaku-upload-$RUN_NUMBER"
           sshpass -e ssh \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             -p "$SSH_PORT" \
             "$SSH_USER@$SSH_HOST" \
             "rm -rf '$remote_parts' && mkdir -p '$remote_parts'"
@@ -189,6 +191,9 @@ jobs:
               sshpass -e scp \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+                -o ConnectTimeout=15 \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=4 \
                 -P "$SSH_PORT" \
                 "$1" \
                 "$SSH_USER@$SSH_HOST:$remote_parts/"
@@ -196,6 +201,9 @@ jobs:
           sshpass -e ssh \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             -p "$SSH_PORT" \
             "$SSH_USER@$SSH_HOST" \
             "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' BASE_URL='$BASE_URL' bash -s" <<'REMOTE'
