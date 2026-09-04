@@ -165,6 +165,7 @@ jobs:
           SSH_USER: ${{ secrets.USER }}
           SSH_PASSWORD: ${{ secrets.PASSWORD }}
           SSH_PORT: ${{ secrets.PORT }}
+          BASE_URL: ${{ secrets.BASE_URL }}
           RUN_NUMBER: ${{ github.run_number }}
           STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
           DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
@@ -197,7 +198,7 @@ jobs:
             -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
             -p "$SSH_PORT" \
             "$SSH_USER@$SSH_HOST" \
-            "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' bash -s" <<'REMOTE'
+            "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' BASE_URL='$BASE_URL' bash -s" <<'REMOTE'
           set -euo pipefail
           basedir="$DEPLOY_BASE_DIR"
           workdir="$basedir/releases/$RUN_NUMBER"
@@ -252,9 +253,9 @@ jobs:
             exit 1
           fi
 
-          curl -fsS --max-time 15 https://shiyi.dev/ >/dev/null
-          curl -fsS --max-time 15 https://shiyi.dev/qaqdmin >/dev/null
-          curl -fsS --max-time 15 https://shiyi.dev/api/v3/ping
+          curl -fsS --max-time 15 "$BASE_URL/" >/dev/null
+          curl -fsS --max-time 15 "$BASE_URL/qaqdmin" >/dev/null
+          curl -fsS --max-time 15 "$BASE_URL/api/v3/ping"
 
           find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
           echo "Deployed and verified Yohaku release $RUN_NUMBER at $basedir/current"
