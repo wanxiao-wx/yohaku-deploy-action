@@ -1,0 +1,570 @@
+diff --git a/apps/web/src/app/[locale]/(home)/components/BottomSection.tsx b/apps/web/src/app/[locale]/(home)/components/BottomSection.tsx
+index fff55c7..4cbefc7 100644
+--- a/apps/web/src/app/[locale]/(home)/components/BottomSection.tsx
++++ b/apps/web/src/app/[locale]/(home)/components/BottomSection.tsx
+@@ -11,6 +11,7 @@ import {
+   companionMomentSummary,
+   parseCompanionMomentMetadata,
+ } from '~/lib/companion-moment'
++import { isDongxinPost } from '~/lib/dongxin-archive'
+ import { parseRecentlyContent } from '~/lib/enrichment/recently'
+ import { getNoteRouteParams } from '~/lib/note-route'
+ import { apiClient } from '~/lib/request'
+@@ -39,6 +40,7 @@ const useRecentComments = (locale: string) => {
+     const seen = new Set<string>()
+     const unique: typeof data.comment = []
+     for (const c of data.comment) {
++      if (isDongxinPost(c)) continue
+       if (seen.has(c.id)) continue
+       seen.add(c.id)
+       unique.push(c)
+diff --git a/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx b/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx
+index 372c2ec..3f353b4 100644
+--- a/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx
++++ b/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx
+@@ -7,6 +7,7 @@ import { useMemo } from 'react'
+ 
+ import { FloatPopover } from '~/components/ui/float-popover'
+ import { Link } from '~/i18n/navigation'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { clsxm } from '~/lib/helper'
+ import { apiClient } from '~/lib/request'
+ 
+@@ -64,7 +65,7 @@ export const HomePageTimeLine = () => {
+   })
+ 
+   const model = useMemo(
+-    () => buildTimelineModel(data?.posts, data?.notes),
++    () => buildTimelineModel(withoutDongxinPosts(data?.posts || []), data?.notes),
+     [data?.posts, data?.notes],
+   )
+ 
+diff --git a/apps/web/src/app/[locale]/(home)/layout.tsx b/apps/web/src/app/[locale]/(home)/layout.tsx
+index 8346943..28484d4 100644
+--- a/apps/web/src/app/[locale]/(home)/layout.tsx
++++ b/apps/web/src/app/[locale]/(home)/layout.tsx
+@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
+ 
+ import { QueryHydrate } from '~/components/common/QueryHydrate'
+ import type { Locale } from '~/i18n/config'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { isShallowEqualArray } from '~/lib/lodash'
+ import { getQueryClient } from '~/lib/query-client.server'
+ import { apiClient } from '~/lib/request'
+@@ -30,7 +31,10 @@ export default definePrerenderPage<{ locale: string }>()({
+     try {
+       return await queryClient.fetchQuery({
+         queryKey,
+-        queryFn: async () => (await apiClient.aggregate.getTop(5)).$serialized,
++        queryFn: async () => {
++          const data = (await apiClient.aggregate.getTop(5)).$serialized
++          return { ...data, posts: withoutDongxinPosts(data.posts) }
++        },
+       })
+     } catch (error) {
+       return requestErrorHandler(error)
+diff --git a/apps/web/src/app/[locale]/categories/[slug]/page.tsx b/apps/web/src/app/[locale]/categories/[slug]/page.tsx
+index ff0d754..97d012e 100644
+--- a/apps/web/src/app/[locale]/categories/[slug]/page.tsx
++++ b/apps/web/src/app/[locale]/categories/[slug]/page.tsx
+@@ -6,7 +6,12 @@ import { PinnedFeatureBlock } from '~/components/modules/category/PinnedFeatureB
+ import { SubTagChips } from '~/components/modules/category/SubTagChips'
+ import { BackToTop } from '~/components/ui/back-to-top/BackToTop'
+ import { BottomToUpSoftSpringTransitionView } from '~/components/ui/transition'
++import { redirect } from '~/i18n/navigation'
+ import { tagGlossaryPairsOf } from '~/lib/api/tag-glossary'
++import {
++  DONGXIN_ARCHIVE_PATH,
++  DONGXIN_CATEGORY_SLUG,
++} from '~/lib/dongxin-archive'
+ import { definePrerenderPage } from '~/lib/request.server'
+ 
+ import { getData } from './api'
+@@ -16,7 +21,11 @@ export default definePrerenderPage<{ slug: string; locale: string }>()({
+     return getData({ slug: params.slug })
+   },
+ 
+-  Component: async ({ data, params: { slug } }) => {
++  Component: async ({ data, params: { slug, locale } }) => {
++    if (slug === DONGXIN_CATEGORY_SLUG) {
++      redirect({ href: DONGXIN_ARCHIVE_PATH, locale })
++    }
++
+     const { name, count, children, tagsSum } = data
+     const tagGlossary = tagGlossaryPairsOf(data.$meta)
+ 
+diff --git a/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/PostDetailClient.tsx b/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/PostDetailClient.tsx
+index fae1432..c44d857 100644
+--- a/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/PostDetailClient.tsx
++++ b/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/PostDetailClient.tsx
+@@ -39,6 +39,10 @@ import {
+ } from '~/components/ui/transition'
+ import { OnlyMobile } from '~/components/ui/viewport/OnlyMobile'
+ import { articleMetaOf } from '~/lib/api/article-meta'
++import {
++  DONGXIN_ARCHIVE_PATH,
++  DONGXIN_CATEGORY_SLUG,
++} from '~/lib/dongxin-archive'
+ import { routeBuilder, Routes } from '~/lib/route-builder'
+ import { LexicalImageRecordProvider } from '~/providers/article/LexicalImageRecordProvider'
+ import {
+@@ -75,7 +79,10 @@ const PostPage = ({
+   const { id } = data
+   const locked = useCurrentPostMetaSelector((meta) => meta?.paywall?.locked)
+   const { category } = data
+-  const categoryHref = routeBuilder(Routes.Category, { slug: category.slug })
++  const categoryHref =
++    category.slug === DONGXIN_CATEGORY_SLUG
++      ? DONGXIN_ARCHIVE_PATH
++      : routeBuilder(Routes.Category, { slug: category.slug })
+   return (
+     <div className="relative w-full min-w-0">
+       {!preview && <AckRead id={id} type="post" />}
+diff --git a/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/page.tsx b/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/page.tsx
+index e171c78..2cc2ecf 100644
+--- a/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/page.tsx
++++ b/apps/web/src/app/[locale]/posts/(post-detail)/[category]/[slug]/page.tsx
+@@ -6,6 +6,10 @@ import { PageColorGradient } from '~/components/common/PageColorGradient'
+ import type { Locale } from '~/i18n/config'
+ import { articleMetaOf } from '~/lib/api/article-meta'
+ import { getContentLocaleRedirect } from '~/lib/content-locale'
++import {
++  DONGXIN_ARCHIVE_PATH,
++  DONGXIN_CATEGORY_SLUG,
++} from '~/lib/dongxin-archive'
+ import { getOgUrl } from '~/lib/helper.server'
+ import { getSummaryFromMd, getWordCountFromMd } from '~/lib/markdown'
+ import { definePrerenderPage } from '~/lib/request.server'
+@@ -63,7 +67,9 @@ export const generateMetadata = async (props: {
+       ...metadata,
+       keywords: meta?.keywords,
+       category: categorySlug,
+-      ...(fallbackLocale ? { robots: NOINDEX_FOLLOW_ROBOTS } : {}),
++      ...(fallbackLocale || categorySlug === DONGXIN_CATEGORY_SLUG
++        ? { robots: NOINDEX_FOLLOW_ROBOTS }
++        : {}),
+     } satisfies Metadata
+   } catch (error) {
+     unstable_rethrow(error)
+@@ -111,7 +117,9 @@ export default definePrerenderPage<PageParams>()<PostDataResult>({
+           name: data.category.name,
+           item: buildLocalePrefixedPath(
+             params.locale as Locale,
+-            `/categories/${data.category.slug}`,
++            data.category.slug === DONGXIN_CATEGORY_SLUG
++              ? DONGXIN_ARCHIVE_PATH
++              : `/categories/${data.category.slug}`,
+           ),
+         },
+         {
+diff --git a/apps/web/src/app/[locale]/posts/(post-list)/page.tsx b/apps/web/src/app/[locale]/posts/(post-list)/page.tsx
+index f3d3bab..2800add 100644
+--- a/apps/web/src/app/[locale]/posts/(post-list)/page.tsx
++++ b/apps/web/src/app/[locale]/posts/(post-list)/page.tsx
+@@ -1,8 +1,4 @@
+-import type {
+-  PaginateResult,
+-  PostModel,
+-  PostResponseMeta,
+-} from '@mx-space/api-client'
++import type { PostResponseMeta } from '@mx-space/api-client'
+ import type { Metadata } from 'next'
+ import { notFound } from 'next/navigation'
+ import { getTranslations } from 'next-intl/server'
+@@ -21,7 +17,7 @@ import { PostSortBar } from '~/components/modules/post/PostSortBar'
+ import { NothingFound } from '~/components/modules/shared/NothingFound'
+ import { BottomToUpSoftSpringTransitionView } from '~/components/ui/transition'
+ import type { Locale } from '~/i18n/config'
+-import { apiClient } from '~/lib/request'
++import { getPublicPostList } from '~/lib/dongxin-archive'
+ import { definePrerenderPage } from '~/lib/request.server'
+ import { buildPageMetadata } from '~/lib/seo/metadata.server'
+ import {
+@@ -71,16 +67,14 @@ export default definePrerenderPage<Props>()({
+     const pageNumber = page ? Number.parseInt(page) : 1
+     const currentSize = size ? Number.parseInt(size) : 10
+ 
+-    const result = await apiClient.post.proxy.get<PaginateResult<PostModel>>({
+-      params: {
+-        page: pageNumber,
+-        size: currentSize,
+-        sortBy,
+-        sortOrder: orderBy === 'desc' ? -1 : 1,
+-        truncate: 150,
+-        lang: locale,
+-        excludeAiWritten: filter === 'no-ai' ? true : undefined,
+-      },
++    const result = await getPublicPostList({
++      page: pageNumber,
++      size: currentSize,
++      sortBy,
++      sortOrder: orderBy === 'desc' ? -1 : 1,
++      truncate: 150,
++      lang: locale,
++      excludeAiWritten: filter === 'no-ai' ? true : undefined,
+     })
+     return {
+       data: result.data,
+diff --git a/apps/web/src/app/[locale]/posts/tag/[name]/page.tsx b/apps/web/src/app/[locale]/posts/tag/[name]/page.tsx
+index 765fdcd..4e2df7e 100644
+--- a/apps/web/src/app/[locale]/posts/tag/[name]/page.tsx
++++ b/apps/web/src/app/[locale]/posts/tag/[name]/page.tsx
+@@ -5,6 +5,7 @@ import { TagHero } from '~/components/modules/category/TagHero'
+ import { BackToTop } from '~/components/ui/back-to-top/BackToTop'
+ import { BottomToUpSoftSpringTransitionView } from '~/components/ui/transition'
+ import { createTagLabeler, tagGlossaryPairsOf } from '~/lib/api/tag-glossary'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ import { definePrerenderPage } from '~/lib/request.server'
+ 
+@@ -14,7 +15,10 @@ export default definePrerenderPage<{
+ }>()({
+   async fetcher({ name }) {
+     const res = await apiClient.category.getTagByName(name)
+-    return { posts: res.data, tagGlossary: tagGlossaryPairsOf(res.$meta) }
++    return {
++      posts: withoutDongxinPosts(res.data),
++      tagGlossary: tagGlossaryPairsOf(res.$meta),
++    }
+   },
+   async Component({ data: { posts, tagGlossary }, params: { name } }) {
+     const label = createTagLabeler(tagGlossary)(name)
+diff --git a/apps/web/src/app/[locale]/search/SearchPageClient.tsx b/apps/web/src/app/[locale]/search/SearchPageClient.tsx
+index 9bf7ffe..f30e8c9 100644
+--- a/apps/web/src/app/[locale]/search/SearchPageClient.tsx
++++ b/apps/web/src/app/[locale]/search/SearchPageClient.tsx
+@@ -18,6 +18,7 @@ import { MotionButtonBase } from '~/components/ui/button'
+ import { LoadingMark } from '~/components/ui/loading/LoadingMark'
+ import { useDebounceValue } from '~/hooks/common/use-debounce-value'
+ import { Link, useRouter } from '~/i18n/navigation'
++import { isDongxinPost } from '~/lib/dongxin-archive'
+ import { noopArr } from '~/lib/noop'
+ import { buildNotePath } from '~/lib/note-route'
+ import { apiClient } from '~/lib/request'
+@@ -61,7 +62,9 @@ export function SearchPageClient() {
+       (data: any) => {
+         if (!data?.data) return
+ 
+-        const list: SearchListType[] = data.data.map((item: any) => {
++        const list: SearchListType[] = data.data
++          .filter((item: any) => !isDongxinPost(item))
++          .map((item: any) => {
+           switch (item.type) {
+             case 'post': {
+               return {
+@@ -94,7 +97,7 @@ export function SearchPageClient() {
+               }
+             }
+           }
+-        })
++          })
+         setCurrentSelect(0)
+         return list
+       },
+diff --git a/apps/web/src/app/[locale]/timeline/page.tsx b/apps/web/src/app/[locale]/timeline/page.tsx
+index dcad193..27a25bf 100644
+--- a/apps/web/src/app/[locale]/timeline/page.tsx
++++ b/apps/web/src/app/[locale]/timeline/page.tsx
+@@ -28,6 +28,7 @@ import { groupByYearMonth } from '~/components/modules/timeline/utils'
+ import { BackToTop } from '~/components/ui/back-to-top/BackToTop'
+ import { MotionButtonBase } from '~/components/ui/button'
+ import { useRouter } from '~/i18n/navigation'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { buildNotePath } from '~/lib/note-route'
+ import { apiClient } from '~/lib/request'
+ import { springScrollToElement } from '~/lib/scroller'
+@@ -183,7 +184,7 @@ export default function TimelinePage() {
+     const list: TimelineEntry[] = []
+ 
+     if (!memory) {
+-      for (const post of posts) {
++      for (const post of withoutDongxinPosts(posts)) {
+         list.push({
+           title: post.title,
+           meta: [post.category.name, t('timeline_post')],
+diff --git a/apps/web/src/app/feed/route.tsx b/apps/web/src/app/feed/route.tsx
+index d76886f..1dadfda 100644
+--- a/apps/web/src/app/feed/route.tsx
++++ b/apps/web/src/app/feed/route.tsx
+@@ -9,6 +9,7 @@ import { ContainerRule as __ContainerRule } from '~/components/ui/markdown/parse
+ import { InsertRule } from '~/components/ui/markdown/parsers/ins'
+ import { MentionRule } from '~/components/ui/markdown/parsers/mention'
+ import { SpoilerRule } from '~/components/ui/markdown/parsers/spoiler'
++import { isDongxinPostUrl } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ 
+ export const dynamic = 'force-dynamic'
+@@ -84,7 +85,7 @@ export async function GET() {
+     custom_elements,
+   })
+ 
+-  data.forEach((item) => {
++  data.filter((item) => !isDongxinPostUrl(item.link)).forEach((item) => {
+     const render = () => {
+       const isRichText = item.contentFormat === 'lexical'
+       if (noRSS || isRichText) {
+diff --git a/apps/web/src/app/llms.txt/route.ts b/apps/web/src/app/llms.txt/route.ts
+index 826dcb4..ca5c64e 100644
+--- a/apps/web/src/app/llms.txt/route.ts
++++ b/apps/web/src/app/llms.txt/route.ts
+@@ -1,6 +1,7 @@
+ import type { NoteModel, PageModel, PostModel } from '@mx-space/api-client'
+ 
+ import { AGGREGATE_CACHE_TAG, withCacheTag } from '~/lib/cache-tags'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { buildNotePath } from '~/lib/note-route'
+ import { apiClient } from '~/lib/request'
+ 
+@@ -56,7 +57,9 @@ export async function GET() {
+     lines.push(`> ${oneLine(description)}`, '')
+   }
+ 
+-  const posts = ((postsResult as any).data ?? []) as PostModel[]
++  const posts = withoutDongxinPosts(
++    ((postsResult as any).data ?? []) as PostModel[],
++  )
+   if (posts.length) {
+     lines.push('## Posts', '')
+     for (const post of posts) {
+diff --git a/apps/web/src/app/sitemap/route.tsx b/apps/web/src/app/sitemap/route.tsx
+index 03575f8..98431b1 100644
+--- a/apps/web/src/app/sitemap/route.tsx
++++ b/apps/web/src/app/sitemap/route.tsx
+@@ -1,6 +1,7 @@
+ import type { TimelineData } from '@mx-space/api-client'
+ import { TimelineType } from '@mx-space/api-client'
+ 
++import { isDongxinPostUrl } from '~/lib/dongxin-archive'
+ import { escapeXml } from '~/lib/helper.server'
+ import { getQueryClient } from '~/lib/query-client.server'
+ import { apiClient } from '~/lib/request'
+@@ -29,7 +30,9 @@ export const GET = async () => {
+       }
+       const notes = (timeline.notes ?? []) as SitemapTimelineNote[]
+ 
+-      return canonicalizeSitemapNoteUrls(sitemap.data, notes)
++      return canonicalizeSitemapNoteUrls(sitemap.data, notes).filter(
++        (item) => !isDongxinPostUrl(item.url),
++      )
+     },
+   })
+ 
+diff --git a/apps/web/src/components/layout/header/internal/HeaderDataConfigureProvider.tsx b/apps/web/src/components/layout/header/internal/HeaderDataConfigureProvider.tsx
+index b2b6755..44d6c3e 100644
+--- a/apps/web/src/components/layout/header/internal/HeaderDataConfigureProvider.tsx
++++ b/apps/web/src/components/layout/header/internal/HeaderDataConfigureProvider.tsx
+@@ -7,6 +7,7 @@ import { atom, useAtomValue, useSetAtom } from 'jotai'
+ import { useLocale } from 'next-intl'
+ import { createContext, use, useCallback, useEffect, useState } from 'react'
+ 
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ import { useAppConfigSelector } from '~/providers/root/aggregation-data-provider'
+ import { navigation } from '~/queries/definition/navigation'
+@@ -96,8 +97,11 @@ export const HeaderDataConfigureProvider: Component = ({ children }) => {
+ 
+   const { data: topData } = useQuery({
+     queryKey: ['nav-top'],
+-    queryFn: async () =>
+-      (await apiClient.aggregate.getTop(5)).$serialized as AggregateTop,
++    queryFn: async () => {
++      const data = (await apiClient.aggregate.getTop(5))
++        .$serialized as AggregateTop
++      return { ...data, posts: withoutDongxinPosts(data.posts) }
++    },
+     staleTime: 1000 * 60 * 5,
+     enabled: shouldLoadTimelineMenu,
+   })
+diff --git a/apps/web/src/components/modules/post/PostMetaBar.tsx b/apps/web/src/components/modules/post/PostMetaBar.tsx
+index a093b0f..5055092 100644
+--- a/apps/web/src/components/modules/post/PostMetaBar.tsx
++++ b/apps/web/src/components/modules/post/PostMetaBar.tsx
+@@ -12,6 +12,10 @@ import { RelativeTime } from '~/components/ui/relative-time'
+ import { useIsClient } from '~/hooks/common/use-is-client'
+ import { useRouter } from '~/i18n/navigation'
+ import { createTagLabeler, type TagGlossaryPair } from '~/lib/api/tag-glossary'
++import {
++  DONGXIN_ARCHIVE_PATH,
++  DONGXIN_CATEGORY_SLUG,
++} from '~/lib/dongxin-archive'
+ import { clsxm } from '~/lib/helper'
+ import { routeBuilder, Routes } from '~/lib/route-builder'
+ 
+@@ -86,9 +90,11 @@ export const PostMetaBar: Component<{
+               onClick={() =>
+                 !!meta.category &&
+                 router.push(
+-                  routeBuilder(Routes.Category, {
+-                    slug: meta.category.slug,
+-                  }),
++                  meta.category.slug === DONGXIN_CATEGORY_SLUG
++                    ? DONGXIN_ARCHIVE_PATH
++                    : routeBuilder(Routes.Category, {
++                        slug: meta.category.slug,
++                      }),
+                 )
+               }
+             >
+diff --git a/apps/web/src/components/modules/post/fab/PostTagsFAB.tsx b/apps/web/src/components/modules/post/fab/PostTagsFAB.tsx
+index abbc014..97a8d8f 100644
+--- a/apps/web/src/components/modules/post/fab/PostTagsFAB.tsx
++++ b/apps/web/src/components/modules/post/fab/PostTagsFAB.tsx
+@@ -13,6 +13,7 @@ import { useModalStack } from '~/components/ui/modal'
+ import { Tag } from '~/components/ui/tag/Tag'
+ import { Link } from '~/i18n/navigation'
+ import { createTagLabeler, tagGlossaryPairsOf } from '~/lib/api/tag-glossary'
++import { withoutDongxinPosts } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ import { routeBuilder, Routes } from '~/lib/route-builder'
+ 
+@@ -115,7 +116,9 @@ export const TagDetailModal = (props: { name: string }) => {
+     queryKey: [name, 'tag'],
+     queryFn: async ({ queryKey }) => {
+       const [tagName] = queryKey
+-      return (await apiClient.category.getTagByName(tagName)).data
++      return withoutDongxinPosts(
++        (await apiClient.category.getTagByName(tagName)).data,
++      )
+     },
+     staleTime: 1000 * 60 * 60 * 24,
+   })
+diff --git a/apps/web/src/components/modules/shared/SearchPanel.tsx b/apps/web/src/components/modules/shared/SearchPanel.tsx
+index f6f9a6d..fc2b746 100644
+--- a/apps/web/src/components/modules/shared/SearchPanel.tsx
++++ b/apps/web/src/components/modules/shared/SearchPanel.tsx
+@@ -19,6 +19,7 @@ import {
+ import { LoadingMark } from '~/components/ui/loading/LoadingMark'
+ import { useDebounceValue } from '~/hooks/common/use-debounce-value'
+ import { Link } from '~/i18n/navigation'
++import { isDongxinPost } from '~/lib/dongxin-archive'
+ import { buildNotePath } from '~/lib/note-route'
+ import { apiClient } from '~/lib/request'
+ import { jotaiStore } from '~/lib/store'
+@@ -145,6 +146,7 @@ const SearchPanelImpl = () => {
+         if (!items) return
+ 
+         const list: SearchListItem[] = items
++          .filter((item: any) => !isDongxinPost(item))
+           .map((item: any): SearchListItem | undefined => {
+             switch (item.type) {
+               case 'post': {
+diff --git a/apps/web/src/queries/definition/navigation.ts b/apps/web/src/queries/definition/navigation.ts
+index 355850d..5aff661 100644
+--- a/apps/web/src/queries/definition/navigation.ts
++++ b/apps/web/src/queries/definition/navigation.ts
+@@ -4,6 +4,7 @@ import type {
+   HeaderPostPreview,
+   NavPostsPayload,
+ } from '~/components/layout/header/internal/nav-menu-data'
++import { DONGXIN_CATEGORY_SLUG } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ 
+ import { defineQuery } from '../helper'
+@@ -49,7 +50,9 @@ export const navigation = {
+       queryFn: async ({ queryKey }) => {
+         const [, , , slug] = queryKey as [string, string, string, string | null]
+         const categoriesResult = await apiClient.category.getAllCategories()
+-        const categories = categoriesResult as HeaderCategoryNavItem[]
++        const categories = (
++          categoriesResult as HeaderCategoryNavItem[]
++        ).filter((category) => category.slug !== DONGXIN_CATEGORY_SLUG)
+         const selectedSlug = slug || categories[0]?.slug || null
+ 
+         const selectedCategory = selectedSlug
+diff --git a/apps/web/src/lib/dongxin-archive.ts b/apps/web/src/lib/dongxin-archive.ts
+new file mode 100644
+index 0000000..f5333a8
+--- /dev/null
++++ b/apps/web/src/lib/dongxin-archive.ts
+@@ -0,0 +1,90 @@
++import type { Pager, PaginateResult, PostModel } from '@mx-space/api-client'
++
++import { apiClient } from '~/lib/request'
++
++export const DONGXIN_CATEGORY_SLUG = 'dongxin'
++export const DONGXIN_ARCHIVE_PATH = '/dongxin/'
++
++export const isDongxinPost = (item: any) =>
++  item?.category?.slug === DONGXIN_CATEGORY_SLUG
++
++export const isDongxinPostUrl = (value: unknown) => {
++  if (typeof value !== 'string') return false
++
++  try {
++    return new URL(value, 'https://local.invalid').pathname.includes(
++      `/posts/${DONGXIN_CATEGORY_SLUG}/`,
++    )
++  } catch {
++    return value.includes(`/posts/${DONGXIN_CATEGORY_SLUG}/`)
++  }
++}
++
++export const withoutDongxinPosts = <T>(items: T[]) =>
++  items.filter((item) => !isDongxinPost(item))
++
++const MAX_SOURCE_PAGE_SIZE = 100
++
++interface PublicPostListParams {
++  excludeAiWritten?: boolean
++  lang?: string
++  page?: number
++  size?: number
++  sortBy?: string
++  sortOrder?: 1 | -1
++  truncate?: number
++}
++
++/**
++ * Core does not support excluding one category. Fetch every public post,
++ * remove the private archive category, then paginate the visible set locally.
++ * This avoids empty pages and incorrect totals for every supported sort mode.
++ */
++export const getPublicPostList = async ({
++  page = 1,
++  size = 10,
++  ...params
++}: PublicPostListParams) => {
++  const first = await apiClient.post.proxy.get<PaginateResult<PostModel>>({
++    params: { ...params, page: 1, size: MAX_SOURCE_PAGE_SIZE },
++  })
++  const sourcePages = [first]
++
++  for (
++    let currentPage = 2;
++    currentPage <= first.pagination.totalPages;
++    currentPage++
++  ) {
++    sourcePages.push(
++      await apiClient.post.proxy.get<PaginateResult<PostModel>>({
++        params: {
++          ...params,
++          page: currentPage,
++          size: MAX_SOURCE_PAGE_SIZE,
++        },
++      }),
++    )
++  }
++
++  const visible = withoutDongxinPosts(
++    sourcePages.flatMap((result) => result.data),
++  )
++  const currentPage = Math.max(1, page)
++  const pageSize = Math.max(1, size)
++  const totalPage = Math.max(1, Math.ceil(visible.length / pageSize))
++  const start = (currentPage - 1) * pageSize
++  const pagination: Pager = {
++    total: visible.length,
++    size: pageSize,
++    page: currentPage,
++    totalPages: totalPage,
++    hasPrevPage: currentPage > 1,
++    hasNextPage: currentPage < totalPage,
++  }
++
++  return {
++    data: visible.slice(start, start + pageSize),
++    pagination,
++    $meta: first.$meta,
++  }
++}
+

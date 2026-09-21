@@ -30,6 +30,7 @@ jobs:
 
     outputs:
       hash_content: ${{ steps.read_hash.outputs.hash_content }}
+      customization_hash: ${{ steps.customization_hash.outputs.value }}
 
     steps:
       - name: Checkout
@@ -39,6 +40,11 @@ jobs:
         run: |
           content=$(cat ${{ env.HASH_FILE }}) || true
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
+      - name: Hash Yohaku customizations
+        id: customization_hash
+        run: |
+          value=$(sha256sum patches/yohaku-dongxin-private-archive.patch | cut -d ' ' -f 1)
+          echo "value=$value" >> "$GITHUB_OUTPUT"
   check:
     name: Check Should Rebuild
     runs-on: ubuntu-latest
@@ -59,11 +65,13 @@ jobs:
         id: use_content
         env:
           FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
+          CUSTOMIZATION_HASH: ${{ needs.prepare.outputs.customization_hash }}
         run: |
           file_hash=$FILE_HASH
-          current_hash=$(git rev-parse --short HEAD)
+          source_hash=$(git rev-parse --short HEAD)
+          current_hash="$source_hash:$CUSTOMIZATION_HASH"
           echo "File Hash: $file_hash"
-          echo "Current Git Hash: $current_hash"
+          echo "Current build signature: $current_hash"
           if [ "$file_hash" == "$current_hash" ]; then
             echo "Hashes match. Stopping workflow."
             echo "canceled=true" >> $GITHUB_OUTPUT
@@ -83,6 +91,7 @@ jobs:
     outputs:
       sha_short: ${{ steps.store.outputs.sha_short }}
       branch: ${{ steps.store.outputs.branch }}
+      build_signature: ${{ steps.store.outputs.build_signature }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,6 +117,13 @@ jobs:
         run: |
           perl -0pi -e 's#atom<string \| null>\(null\)#atom<string | null>(process.env.NEXT_PUBLIC_ADMIN_URL ?? null)#' apps/web/src/atoms/url.ts
           grep -F 'NEXT_PUBLIC_ADMIN_URL' apps/web/src/atoms/url.ts
+      - name: Apply private archive customizations
+        env:
+          CUSTOMIZATION_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/patches/yohaku-dongxin-private-archive.patch
+        run: |
+          curl -fsSL "$CUSTOMIZATION_URL" -o /tmp/yohaku-dongxin-private-archive.patch
+          git apply --check /tmp/yohaku-dongxin-private-archive.patch
+          git apply /tmp/yohaku-dongxin-private-archive.patch
       - name: Build project
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
@@ -146,8 +162,10 @@ jobs:
         run: |
           sha_short=$(git rev-parse --short HEAD)
           branch_name=$(git rev-parse --abbrev-ref HEAD)
+          customization_hash=$(sha256sum /tmp/yohaku-dongxin-private-archive.patch | cut -d ' ' -f 1)
           echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
           echo "branch=$branch_name" >> "$GITHUB_OUTPUT"
+          echo "build_signature=$sha_short:$customization_hash" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy artifact
@@ -293,9 +311,9 @@ jobs:
           echo "Branch from build: $BRANCH"
       - name: Write hash to file
         env:
-          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
+          BUILD_SIGNATURE: ${{ needs.build.outputs.build_signature }}
 
-        run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
+        run: echo "$BUILD_SIGNATURE" > ${{ env.HASH_FILE }}
       - name: Commit files
         run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
