@@ -1,0 +1,165 @@
+name: Deploy Dongxin Static Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy-assets/dongxin/**"
+      - ".github/workflows/deploy-dongxin-static.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dongxin-static
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify deployment assets
+        run: |
+          set -euo pipefail
+          test -s deploy-assets/dongxin/index.html
+          test -s deploy-assets/dongxin/dongxinmtv.yohaku.html
+          grep -q '/posts/dongxin/anime-new-power-vol140' deploy-assets/dongxin/index.html
+
+      - name: Upload static pages and configure redirects
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.USER }}
+          SSH_PASSWORD: ${{ secrets.PASSWORD }}
+          SSH_PORT: ${{ secrets.PORT }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          remote_upload="/tmp/dongxin-static-$RUN_NUMBER"
+          ssh_opts=(
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/tmp/dongxin_known_hosts
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          sshpass -e ssh "${ssh_opts[@]}" -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            "rm -rf '$remote_upload' && mkdir -p '$remote_upload'"
+          sshpass -e scp "${ssh_opts[@]}" -P "$SSH_PORT" \
+            deploy-assets/dongxin/index.html \
+            deploy-assets/dongxin/dongxinmtv.yohaku.html \
+            "$SSH_USER@$SSH_HOST:$remote_upload/"
+
+          sshpass -e ssh "${ssh_opts[@]}" -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            "RUN_NUMBER='$RUN_NUMBER' REMOTE_UPLOAD='$remote_upload' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          target_dir=/opt/1panel/www/sites/shiyi.blog/index/dongxin
+          config=/opt/1panel/www/conf.d/shiyi.blog.conf
+          backup_dir="/opt/1panel/backups/dongxin-static/$RUN_NUMBER"
+          mkdir -p "$backup_dir" "$target_dir/mtv"
+
+          cp -a "$target_dir/index.html" "$backup_dir/index.html"
+          cp -a "$target_dir/dongxinmtv.yohaku.html" "$backup_dir/dongxinmtv.yohaku.html"
+          cp -a "$config" "$backup_dir/shiyi.blog.conf"
+
+          rollback() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              cp -a "$backup_dir/index.html" "$target_dir/index.html"
+              cp -a "$backup_dir/dongxinmtv.yohaku.html" "$target_dir/dongxinmtv.yohaku.html"
+              cp -a "$backup_dir/shiyi.blog.conf" "$config"
+              openresty_container=$(docker ps --format '{{.Names}}' | grep -m1 -E '(^|-)openresty($|-)' || true)
+              if [ -n "$openresty_container" ]; then
+                docker exec "$openresty_container" nginx -t && docker exec "$openresty_container" nginx -s reload || true
+              fi
+            fi
+            rm -rf "$REMOTE_UPLOAD"
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          install -m 0644 "$REMOTE_UPLOAD/index.html" "$target_dir/index.html"
+          install -m 0644 "$REMOTE_UPLOAD/dongxinmtv.yohaku.html" "$target_dir/dongxinmtv.yohaku.html"
+          install -m 0644 "$REMOTE_UPLOAD/dongxinmtv.yohaku.html" "$target_dir/mtv/index.html"
+
+          python3 - "$config" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          archive_block = r'''location ~ ^/dongxin/anime-new-power-vol([1-9][0-9]{0,2})\.html$ {
+              return 301 /posts/dongxin/anime-new-power-vol$1;
+          }
+
+          location /dongxin/ {
+              alias /www/sites/shiyi.blog/index/dongxin/;
+          }'''
+
+          if "location ~ ^/dongxin/anime-new-power-vol" not in text:
+              text, count = re.subn(
+                  r"location\s+\^~\s+/dongxin/\s*\{\s*alias\s+/www/sites/shiyi\.blog/index/dongxin/;\s*\}",
+                  lambda _: archive_block,
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not locate the existing /dongxin/ location block")
+
+          mtv_block = r'''location = /dongxinmtv {
+              return 301 /dongxin/mtv/;
+          }
+
+          location = /dongxinmtv/ {
+              return 301 /dongxin/mtv/;
+          }'''
+
+          if "return 301 /dongxin/mtv/;" not in text:
+              text, count = re.subn(
+                  r"location\s+=\s+/dongxinmtv\s*\{\s*alias\s+/www/sites/shiyi\.blog/index/dongxin/dongxinmtv\.yohaku\.html;\s*\}\s*location\s+=\s+/dongxinmtv/\s*\{\s*return\s+301\s+/dongxinmtv;\s*\}",
+                  lambda _: mtv_block,
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not locate the existing /dongxinmtv location blocks")
+
+          path.write_text(text)
+          PY
+
+          openresty_container=$(docker ps --format '{{.Names}}' | grep -m1 -E '(^|-)openresty($|-)' || true)
+          if [ -z "$openresty_container" ]; then
+            echo "OpenResty container not found"
+            exit 1
+          fi
+          docker exec "$openresty_container" nginx -t
+          docker exec "$openresty_container" nginx -s reload
+
+          test "$(grep -o '/posts/dongxin/anime-new-power-vol[0-9]\+' "$target_dir/index.html" | sort -u | wc -l)" -eq 140
+          test -s "$target_dir/mtv/index.html"
+          trap - EXIT
+          rm -rf "$REMOTE_UPLOAD"
+          echo "Dongxin static pages and redirects deployed successfully"
+          REMOTE
+
+      - name: Verify public routes
+        run: |
+          set -euo pipefail
+          test "$(curl -fsSL https://shiyi.blog/dongxin/ | grep -o '/posts/dongxin/anime-new-power-vol[0-9]\+' | sort -u | wc -l)" -eq 140
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxin/mtv/)" = 200
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxin/anime-new-power-vol1.html)" = 301
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxin/anime-new-power-vol70.html)" = 301
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxin/anime-new-power-vol140.html)" = 301
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxinmtv)" = 301
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' https://shiyi.blog/dongxinmtv/)" = 301
