@@ -40,7 +40,7 @@ index 372c2ec..3f353b4 100644
    )
  
 diff --git a/apps/web/src/app/[locale]/(home)/layout.tsx b/apps/web/src/app/[locale]/(home)/layout.tsx
-index 8346943..28484d4 100644
+index 8346943..f129dcc 100644
 --- a/apps/web/src/app/[locale]/(home)/layout.tsx
 +++ b/apps/web/src/app/[locale]/(home)/layout.tsx
 @@ -3,6 +3,7 @@ import type { Metadata } from 'next'
@@ -51,7 +51,7 @@ index 8346943..28484d4 100644
  import { isShallowEqualArray } from '~/lib/lodash'
  import { getQueryClient } from '~/lib/query-client.server'
  import { apiClient } from '~/lib/request'
-@@ -30,7 +31,10 @@ export default definePrerenderPage<{ locale: string }>()({
+@@ -30,10 +31,17 @@ export default definePrerenderPage<{ locale: string }>()({
      try {
        return await queryClient.fetchQuery({
          queryKey,
@@ -62,7 +62,15 @@ index 8346943..28484d4 100644
 +        },
        })
      } catch (error) {
-       return requestErrorHandler(error)
+-      return requestErrorHandler(error)
++      if ((error as { status?: number })?.status === 404)
++        return requestErrorHandler(error)
++      const fallback = { notes: [], posts: [], recently: [], says: [] }
++      queryClient.setQueryData(queryKey, fallback)
++      return fallback
+     }
+   },
+   async Component(props) {
 diff --git a/apps/web/src/app/[locale]/categories/[slug]/page.tsx b/apps/web/src/app/[locale]/categories/[slug]/page.tsx
 index ff0d754..97d012e 100644
 --- a/apps/web/src/app/[locale]/categories/[slug]/page.tsx
@@ -448,35 +456,12 @@ index f6f9a6d..fc2b746 100644
            .map((item: any): SearchListItem | undefined => {
              switch (item.type) {
                case 'post': {
-diff --git a/apps/web/src/queries/definition/navigation.ts b/apps/web/src/queries/definition/navigation.ts
-index 355850d..5aff661 100644
---- a/apps/web/src/queries/definition/navigation.ts
-+++ b/apps/web/src/queries/definition/navigation.ts
-@@ -4,6 +4,7 @@ import type {
-   HeaderPostPreview,
-   NavPostsPayload,
- } from '~/components/layout/header/internal/nav-menu-data'
-+import { DONGXIN_CATEGORY_SLUG } from '~/lib/dongxin-archive'
- import { apiClient } from '~/lib/request'
- 
- import { defineQuery } from '../helper'
-@@ -49,7 +50,9 @@ export const navigation = {
-       queryFn: async ({ queryKey }) => {
-         const [, , , slug] = queryKey as [string, string, string, string | null]
-         const categoriesResult = await apiClient.category.getAllCategories()
--        const categories = categoriesResult as HeaderCategoryNavItem[]
-+        const categories = (
-+          categoriesResult as HeaderCategoryNavItem[]
-+        ).filter((category) => category.slug !== DONGXIN_CATEGORY_SLUG)
-         const selectedSlug = slug || categories[0]?.slug || null
- 
-         const selectedCategory = selectedSlug
 diff --git a/apps/web/src/lib/dongxin-archive.ts b/apps/web/src/lib/dongxin-archive.ts
 new file mode 100644
-index 0000000..f5333a8
+index 0000000..7ad0adf
 --- /dev/null
 +++ b/apps/web/src/lib/dongxin-archive.ts
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,87 @@
 +import type { Pager, PaginateResult, PostModel } from '@mx-space/api-client'
 +
 +import { apiClient } from '~/lib/request'
@@ -527,23 +512,20 @@ index 0000000..f5333a8
 +  const first = await apiClient.post.proxy.get<PaginateResult<PostModel>>({
 +    params: { ...params, page: 1, size: MAX_SOURCE_PAGE_SIZE },
 +  })
-+  const sourcePages = [first]
-+
-+  for (
-+    let currentPage = 2;
-+    currentPage <= first.pagination.totalPages;
-+    currentPage++
-+  ) {
-+    sourcePages.push(
-+      await apiClient.post.proxy.get<PaginateResult<PostModel>>({
-+        params: {
-+          ...params,
-+          page: currentPage,
-+          size: MAX_SOURCE_PAGE_SIZE,
-+        },
-+      }),
-+    )
-+  }
++  const remainingPages = await Promise.all(
++    Array.from(
++      { length: Math.max(0, first.pagination.totalPages - 1) },
++      (_, index) =>
++        apiClient.post.proxy.get<PaginateResult<PostModel>>({
++          params: {
++            ...params,
++            page: index + 2,
++            size: MAX_SOURCE_PAGE_SIZE,
++          },
++        }),
++    ),
++  )
++  const sourcePages = [first, ...remainingPages]
 +
 +  const visible = withoutDongxinPosts(
 +    sourcePages.flatMap((result) => result.data),
@@ -567,4 +549,26 @@ index 0000000..f5333a8
 +    $meta: first.$meta,
 +  }
 +}
-
+diff --git a/apps/web/src/queries/definition/navigation.ts b/apps/web/src/queries/definition/navigation.ts
+index 355850d..5aff661 100644
+--- a/apps/web/src/queries/definition/navigation.ts
++++ b/apps/web/src/queries/definition/navigation.ts
+@@ -4,6 +4,7 @@ import type {
+   HeaderPostPreview,
+   NavPostsPayload,
+ } from '~/components/layout/header/internal/nav-menu-data'
++import { DONGXIN_CATEGORY_SLUG } from '~/lib/dongxin-archive'
+ import { apiClient } from '~/lib/request'
+ 
+ import { defineQuery } from '../helper'
+@@ -49,7 +50,9 @@ export const navigation = {
+       queryFn: async ({ queryKey }) => {
+         const [, , , slug] = queryKey as [string, string, string, string | null]
+         const categoriesResult = await apiClient.category.getAllCategories()
+-        const categories = categoriesResult as HeaderCategoryNavItem[]
++        const categories = (
++          categoriesResult as HeaderCategoryNavItem[]
++        ).filter((category) => category.slug !== DONGXIN_CATEGORY_SLUG)
+         const selectedSlug = slug || categories[0]?.slug || null
+ 
+         const selectedCategory = selectedSlug
