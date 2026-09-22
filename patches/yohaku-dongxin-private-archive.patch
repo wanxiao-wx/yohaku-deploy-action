@@ -366,7 +366,7 @@ index 826dcb4..ca5c64e 100644
      lines.push('## Posts', '')
      for (const post of posts) {
 diff --git a/apps/web/src/app/sitemap/route.tsx b/apps/web/src/app/sitemap/route.tsx
-index 03575f8..98431b1 100644
+index 03575f8..73d7a96 100644
 --- a/apps/web/src/app/sitemap/route.tsx
 +++ b/apps/web/src/app/sitemap/route.tsx
 @@ -1,6 +1,7 @@
@@ -377,13 +377,41 @@ index 03575f8..98431b1 100644
  import { escapeXml } from '~/lib/helper.server'
  import { getQueryClient } from '~/lib/query-client.server'
  import { apiClient } from '~/lib/request'
-@@ -29,7 +30,9 @@ export const GET = async () => {
+@@ -8,6 +9,20 @@ import { canonicalizeSitemapNoteUrls, type SitemapEntry } from '~/lib/sitemap'
+ 
+ export const dynamic = 'force-dynamic'
+ export const revalidate = 3600 // 1 hour
++
++const canonicalizeDongxinArchiveUrl = (value: string) => {
++  const url = new URL(value)
++  if (url.pathname === '/dongxin') url.pathname = '/dongxin/'
++  if (
++    url.pathname === '/dongxinmtv' ||
++    url.pathname === '/dongxinmtv/' ||
++    url.pathname === '/dongxin/mtv'
++  ) {
++    url.pathname = '/dongxin/mtv/'
++  }
++  return url.toString()
++}
++
+ export const GET = async () => {
+   const queryClient = getQueryClient()
+ 
+@@ -29,7 +44,16 @@ export const GET = async () => {
        }
        const notes = (timeline.notes ?? []) as SitemapTimelineNote[]
  
 -      return canonicalizeSitemapNoteUrls(sitemap.data, notes)
-+      return canonicalizeSitemapNoteUrls(sitemap.data, notes).filter(
-+        (item) => !isDongxinPostUrl(item.url),
++      const entries = canonicalizeSitemapNoteUrls(sitemap.data, notes)
++        .filter((item) => !isDongxinPostUrl(item.url))
++        .map((item) => ({
++          ...item,
++          url: canonicalizeDongxinArchiveUrl(item.url),
++        }))
++
++      return Array.from(
++        new Map(entries.map((item) => [item.url, item])).values(),
 +      )
      },
    })
