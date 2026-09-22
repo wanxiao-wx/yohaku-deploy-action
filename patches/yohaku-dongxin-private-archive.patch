@@ -18,6 +18,37 @@ index fff55c7..4cbefc7 100644
        if (seen.has(c.id)) continue
        seen.add(c.id)
        unique.push(c)
+diff --git a/apps/web/src/app/[locale]/(home)/components/Hero.tsx b/apps/web/src/app/[locale]/(home)/components/Hero.tsx
+index 6d1b014..9b57dd3 100644
+--- a/apps/web/src/app/[locale]/(home)/components/Hero.tsx
++++ b/apps/web/src/app/[locale]/(home)/components/Hero.tsx
+@@ -14,6 +14,7 @@ import {
+   fadeOnlyInLcpSafe,
+   riseInLcpSafe,
+ } from '~/constants/motion-entrance'
++import { useIsClient } from '~/hooks/common/use-is-client'
+ import { clsxm } from '~/lib/helper'
+ import { noopObj } from '~/lib/noop'
+ import { apiClient } from '~/lib/request'
+@@ -230,6 +231,7 @@ const HeroHitokoto = () => {
+ const RemoteHitokotoQuote = () => {
+   const locale = useLocale()
+   const t = useTranslations('home')
++  const isClient = useIsClient()
+   const {
+     data: hitokoto,
+     refetch,
+@@ -246,7 +248,9 @@ const RemoteHitokotoQuote = () => {
+   // Always paint the placeholder so LCP fires on first frame instead of
+   // waiting for an external quote API (hitokoto.cn / dummyjson / meigen).
+   // The remote quote swaps in via the existing transition once loaded.
+-  const displayed = hitokoto ?? t('hero_default_hitokoto')
++  const displayed = isClient
++    ? (hitokoto ?? t('hero_default_hitokoto'))
++    : t('hero_default_hitokoto')
+ 
+   return (
+     <span className="group inline-flex items-center gap-1.5">
 diff --git a/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx b/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx
 index 372c2ec..3f353b4 100644
 --- a/apps/web/src/app/[locale]/(home)/components/HomePageTimeLine.tsx
