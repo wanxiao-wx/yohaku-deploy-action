@@ -631,3 +631,28 @@ index 355850d..5aff661 100644
          const selectedSlug = slug || categories[0]?.slug || null
  
          const selectedCategory = selectedSlug
+diff --git a/apps/web/src/components/layout/footer/FooterInfo.tsx b/apps/web/src/components/layout/footer/FooterInfo.tsx
+index 268848b..9e217a7 100644
+--- a/apps/web/src/components/layout/footer/FooterInfo.tsx
++++ b/apps/web/src/components/layout/footer/FooterInfo.tsx
+@@ -140,7 +140,7 @@ const Colophon = ({
+             <DotSep />
+             <span>
+               {t('colophon_printed_at', {
+-                time: new Date(buildTime).toLocaleDateString(),
++                time: formatBuildDate(buildTime),
+               })}
+             </span>
+           </>
+@@ -169,4 +169,10 @@ const Colophon = ({
+   )
+ }
+-
++
++const formatBuildDate = (buildTime: string) => {
++  const date = new Date(buildTime)
++
++  return `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}/${date.getUTCDate()}`
++}
++
+ const YohakuLink = () => {
