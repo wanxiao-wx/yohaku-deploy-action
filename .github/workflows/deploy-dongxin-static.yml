@@ -99,23 +99,19 @@ jobs:
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          archive_block = r'''location ~ ^/dongxin/anime-new-power-vol([1-9][0-9]{0,2})\.html$ {
+          archive_redirect = r'''location ~ ^/dongxin/anime-new-power-vol([1-9][0-9]{0,2})\.html$ {
               return 301 /posts/dongxin/anime-new-power-vol$1;
-          }
-
-          location /dongxin/ {
-              alias /www/sites/shiyi.blog/index/dongxin/;
           }'''
 
           if "location ~ ^/dongxin/anime-new-power-vol" not in text:
-              text, count = re.subn(
-                  r"location\s+\^~\s+/dongxin/\s*\{\s*alias\s+/www/sites/shiyi\.blog/index/dongxin/;\s*\}",
-                  lambda _: archive_block,
-                  text,
-                  count=1,
-              )
-              if count != 1:
+              text, count = re.subn(r"location\s+\^~\s+/dongxin/", "location /dongxin/", text, count=1)
+              if count != 1 and "location /dongxin/" not in text:
                   raise SystemExit("Could not locate the existing /dongxin/ location block")
+              location_start = text.find("location /dongxin/")
+              line_start = text.rfind("\n", 0, location_start) + 1
+              indent = text[line_start:location_start]
+              indented_redirect = archive_redirect.replace("\n", "\n" + indent)
+              text = text[:line_start] + indent + indented_redirect + "\n\n" + text[line_start:]
 
           mtv_block = r'''location = /dongxinmtv {
               return 301 /dongxin/mtv/;
@@ -127,13 +123,21 @@ jobs:
 
           if "return 301 /dongxin/mtv/;" not in text:
               text, count = re.subn(
-                  r"location\s+=\s+/dongxinmtv\s*\{\s*alias\s+/www/sites/shiyi\.blog/index/dongxin/dongxinmtv\.yohaku\.html;\s*\}\s*location\s+=\s+/dongxinmtv/\s*\{\s*return\s+301\s+/dongxinmtv;\s*\}",
-                  lambda _: mtv_block,
+                  r"location\s*=\s*/dongxinmtv\s*\{[^{}]*\}",
+                  lambda _: mtv_block.split("\n\n", 1)[0],
                   text,
                   count=1,
               )
               if count != 1:
-                  raise SystemExit("Could not locate the existing /dongxinmtv location blocks")
+                  raise SystemExit("Could not locate the existing /dongxinmtv location block")
+              text, count = re.subn(
+                  r"location\s*=\s*/dongxinmtv/\s*\{[^{}]*\}",
+                  lambda _: mtv_block.split("\n\n", 1)[1],
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not locate the existing /dongxinmtv/ location block")
 
           path.write_text(text)
           PY
