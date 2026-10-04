@@ -18,7 +18,7 @@ on:
 permissions: write-all
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   HASH_FILE: build_hash
@@ -236,6 +236,14 @@ jobs:
           previous_target="$(readlink "$basedir/current" 2>/dev/null || true)"
           new_target="releases/$RUN_NUMBER/$STANDALONE_SUBPATH"
 
+          rollback() {
+            if [ -n "$previous_target" ]; then
+              echo "Rolling back to $previous_target"
+              ln -sfn "$previous_target" "$basedir/current"
+              docker restart "$YOHaku_CONTAINER"
+            fi
+          }
+
           ln -sfn "$new_target" "$basedir/current"
           ln -sfn "current/server.js" "$basedir/server.js"
 
@@ -258,17 +266,17 @@ jobs:
           if [ "$healthy" != true ]; then
             echo "Yohaku release $RUN_NUMBER failed its local health check"
             docker logs --tail=150 "$YOHaku_CONTAINER"
-            if [ -n "$previous_target" ]; then
-              echo "Rolling back to $previous_target"
-              ln -sfn "$previous_target" "$basedir/current"
-              docker restart "$YOHaku_CONTAINER"
-            fi
+            rollback
             exit 1
           fi
 
-          curl -fsS --max-time 15 "$BASE_URL/" >/dev/null
-          curl -fsS --max-time 15 "$BASE_URL/qaqdmin" >/dev/null
-          curl -fsS --max-time 15 "$BASE_URL/api/v3/ping"
+          if ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/" >/dev/null || \
+             ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/qaqdmin" >/dev/null || \
+             ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/api/v3/ping"; then
+            echo 'Public health check failed'
+            rollback
+            exit 1
+          fi
 
           find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
           echo "Deployed and verified Yohaku release $RUN_NUMBER at $basedir/current"
