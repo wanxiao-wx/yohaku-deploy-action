@@ -1,0 +1,42 @@
+diff --git a/apps/web/src/app.config.d.ts b/apps/web/src/app.config.d.ts
+index 325ea3d5..6863668d 100644
+--- a/apps/web/src/app.config.d.ts
++++ b/apps/web/src/app.config.d.ts
+@@ -54,6 +54,7 @@ declare global {
+   }
+   export interface Hero {
+     description: string
++    socialIds?: Record<string, string>
+     hitokoto?: {
+       random?: boolean
+       custom?: string
+diff --git a/apps/web/src/app/[locale]/(home)/components/Hero.tsx b/apps/web/src/app/[locale]/(home)/components/Hero.tsx
+index 6d1b014c..db979b26 100644
+--- a/apps/web/src/app/[locale]/(home)/components/Hero.tsx
++++ b/apps/web/src/app/[locale]/(home)/components/Hero.tsx
+@@ -15,7 +15,6 @@ import {
+   riseInLcpSafe,
+ } from '~/constants/motion-entrance'
+ import { clsxm } from '~/lib/helper'
+-import { noopObj } from '~/lib/noop'
+ import { apiClient } from '~/lib/request'
+ import {
+   useAggregationSelector,
+@@ -152,12 +151,14 @@ export const Hero = () => {
+ 
+ const SocialIcons = () => {
+   const siteOwner = useAggregationSelector((agg) => agg.user)
+-  const { socialIds } = siteOwner || {}
++  const heroSocialIds = useAppConfigSelector((config) => config.hero.socialIds)
++  const socialIds = { ...siteOwner?.socialIds, ...heroSocialIds }
+ 
+   return (
+     <div className="flex justify-center gap-3">
+-      {Object.entries(socialIds || noopObj).map(([type, id]: any) => {
+-        if (!isSupportIcon(type)) return null
++      {Object.entries(socialIds).map(([type, id]) => {
++        if (!isSupportIcon(type) || typeof id !== 'string' || !id.trim())
++          return null
+         return <SocialIcon id={id} key={type} type={type} />
+       })}
+     </div>

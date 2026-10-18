@@ -12,6 +12,10 @@ on:
         description: Force a new build and deployment
         type: boolean
         default: false
+      source_ref:
+        description: Optional Yohaku source commit or ref (defaults to latest)
+        type: string
+        default: ''
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -55,6 +59,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.source_ref || '' }}
           token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
@@ -95,6 +100,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.source_ref || '' }}
           token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
@@ -102,6 +108,13 @@ jobs:
 
       - name: Checkout LFS objects
         run: git lfs checkout
+      - name: Support social accounts in hero configuration
+        env:
+          PATCH_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/patches/yohaku-hero-social-ids.patch
+        run: |
+          curl -fsSL "$PATCH_URL" -o /tmp/yohaku-hero-social-ids.patch
+          git apply --check /tmp/yohaku-hero-social-ids.patch
+          git apply /tmp/yohaku-hero-social-ids.patch
       - uses: pnpm/action-setup@v2
 
       - name: Use Node.js ${{ matrix.node-version }}
