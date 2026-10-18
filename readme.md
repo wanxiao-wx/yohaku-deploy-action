@@ -86,6 +86,16 @@ git checkout bc07cfa
 
 ## 配置项
 
+### 首页社交账号
+
+构建时会应用 `patches/yohaku-hero-social-ids.patch`，让首页读取 Mix Space
+`theme/yohaku` 代码片段中的 `hero.socialIds`，与 `hero.hitokoto` 同级。
+它会与用户资料中的社交账号合并，同名平台以主题配置为准；空值不显示。
+支持 `telegram`、`mail`（或 `email`）、`x` 等主题原有平台键名。
+
+修改 JSON 配置不需要重新构建。修改部署补丁后，请手动运行工作流并启用 `force`。
+手动运行时可用 `source_ref` 指定 Yohaku 源码版本；留空及定时运行仍使用上游最新版本。
+
 工作流支持以下环境变量（在 `.github/workflows/deploy.yml` 的 `env` 段修改，或通过 GitHub Variables 注入）：
 
 | 变量名 | 默认值 | 说明 |
