@@ -5,37 +5,29 @@ on:
     branches:
       - main
   schedule:
-    - cron: "0 19 * * *"
+    - cron: '0 19 * * *'
   workflow_dispatch:
-    inputs:
-      force:
-        description: Force a new build and deployment
-        type: boolean
-        default: false
-      source_ref:
-        description: Optional Yohaku source commit or ref (defaults to latest)
-        type: string
-        default: ''
+
   repository_dispatch:
     types: [trigger-workflow]
 
-permissions: write-all
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   HASH_FILE: build_hash
   SOURCE_REPO: innei-dev/Yohaku
   BUILD_COMMAND: pnpm --filter @yohaku/web build:ci
   STANDALONE_SUBPATH: standalone/apps/web
-  DEPLOY_BASE_DIR: /opt/yohaku
 
 jobs:
   prepare:
     name: Prepare
     runs-on: ubuntu-latest
-    if: ${{ github.event.head_commit.message != 'Update hash file' }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event.head_commit.message != 'Update hash file' }}
 
     outputs:
       hash_content: ${{ steps.read_hash.outputs.hash_content }}
@@ -58,8 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ inputs.source_ref || '' }}
+          repository: innei-dev/Yohaku
           token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
@@ -69,14 +60,12 @@ jobs:
         id: use_content
         env:
           FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
-          FORCE_BUILD: ${{ inputs.force || false }}
         run: |
           file_hash=$FILE_HASH
-          source_hash=$(git rev-parse --short HEAD)
-          current_hash="$source_hash"
+          current_hash=$(git rev-parse --short HEAD)
           echo "File Hash: $file_hash"
-          echo "Current build signature: $current_hash"
-          if [ "$FORCE_BUILD" != true ] && [ "$file_hash" == "$current_hash" ]; then
+          echo "Current Git Hash: $current_hash"
+          if [ "$file_hash" == "$current_hash" ]; then
             echo "Hashes match. Stopping workflow."
             echo "canceled=true" >> $GITHUB_OUTPUT
           else
@@ -91,16 +80,14 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [22]
+        node-version: [lts/*]
     outputs:
       sha_short: ${{ steps.store.outputs.sha_short }}
       branch: ${{ steps.store.outputs.branch }}
-      build_signature: ${{ steps.store.outputs.build_signature }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ inputs.source_ref || '' }}
           token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
@@ -108,14 +95,7 @@ jobs:
 
       - name: Checkout LFS objects
         run: git lfs checkout
-      - name: Support social accounts in hero configuration
-        env:
-          PATCH_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/patches/yohaku-hero-social-ids.patch
-        run: |
-          curl -fsSL "$PATCH_URL" -o /tmp/yohaku-hero-social-ids.patch
-          git apply --check /tmp/yohaku-hero-social-ids.patch
-          git apply /tmp/yohaku-hero-social-ids.patch
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -144,12 +124,11 @@ jobs:
           rm -f assets/release.zip
           (cd apps/web/.next && zip --symlinks -r "$GITHUB_WORKSPACE/assets/release.zip" ./* -x "dev/*" -x "cache/*")
 
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: yohaku-release
-          path: assets/release.zip
-          retention-days: 1
+      # - uses: actions/upload-artifact@v4
+      #   with:
+      #     name: dist
+      #     path: assets/release.zip
+      #     retention-days: 7
       - name: Cache Build Artifacts
         id: cache-primes
         uses: actions/cache/save@v4
@@ -165,141 +144,105 @@ jobs:
           branch_name=$(git rev-parse --abbrev-ref HEAD)
           echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
           echo "branch=$branch_name" >> "$GITHUB_OUTPUT"
-          echo "build_signature=$sha_short" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy artifact
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download release artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      # - name: Download artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: dist
+
+      - name: Restore cached Build Artifacts
+        id: cache-primes-restore
+        uses: actions/cache/restore@v4
         with:
-          name: yohaku-release
-          path: deploy-artifact
-      - name: Upload and deploy artifact
-        env:
-          SSH_HOST: ${{ secrets.HOST }}
-          SSH_USER: ${{ secrets.USER }}
-          SSH_PASSWORD: ${{ secrets.PASSWORD }}
-          SSH_PORT: ${{ secrets.PORT }}
-          SSH_HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
-          BASE_URL: ${{ secrets.BASE_URL }}
-          RUN_NUMBER: ${{ github.run_number }}
-          STANDALONE_SUBPATH: ${{ env.STANDALONE_SUBPATH }}
-          DEPLOY_BASE_DIR: ${{ env.DEPLOY_BASE_DIR }}
-        run: |
-          set -euo pipefail
-          test -n "$SSH_HOST_KEY"
-          umask 077
-          printf '%s\n' "$SSH_HOST_KEY" > /tmp/yohaku_known_hosts
-          sudo apt-get install -y sshpass
-          export SSHPASS="$SSH_PASSWORD"
-          remote_parts="/tmp/yohaku-upload-$RUN_NUMBER"
-          sshpass -e ssh \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
-            -o ConnectTimeout=15 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -p "$SSH_PORT" \
-            "$SSH_USER@$SSH_HOST" \
-            "rm -rf '$remote_parts' && mkdir -p '$remote_parts'"
-          mkdir -p deploy-artifact/chunks
-          split -b 5m -d -a 3 deploy-artifact/release.zip deploy-artifact/chunks/part-
-          export SSH_HOST SSH_USER SSH_PORT remote_parts
-          find deploy-artifact/chunks -type f -name 'part-*' -print0 | \
-            xargs -0 -n1 -P4 sh -c '
-              sshpass -e scp \
-                -o StrictHostKeyChecking=yes \
-                -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
-                -o ConnectTimeout=15 \
-                -o ServerAliveInterval=15 \
-                -o ServerAliveCountMax=4 \
-                -P "$SSH_PORT" \
-                "$1" \
-                "$SSH_USER@$SSH_HOST:$remote_parts/"
-            ' sh
-          sshpass -e ssh \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=/tmp/yohaku_known_hosts \
-            -o ConnectTimeout=15 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -p "$SSH_PORT" \
-            "$SSH_USER@$SSH_HOST" \
-            "RUN_NUMBER='$RUN_NUMBER' REMOTE_PARTS='$remote_parts' STANDALONE_SUBPATH='$STANDALONE_SUBPATH' DEPLOY_BASE_DIR='$DEPLOY_BASE_DIR' BASE_URL='$BASE_URL' bash -s" <<'REMOTE'
-          set -euo pipefail
-          basedir="$DEPLOY_BASE_DIR"
-          workdir="$basedir/releases/$RUN_NUMBER"
-          mkdir -p "$workdir" "$basedir/.cache" "$basedir/releases"
-          if ! command -v unzip >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y unzip
-          fi
-          cat "$REMOTE_PARTS"/part-* > "$workdir/release.zip"
-          rm -rf "$REMOTE_PARTS"
-          cd "$workdir"
-          unzip -qq -o "$workdir/release.zip"
-          rm -f "$workdir/release.zip"
-          rm -rf "$workdir/$STANDALONE_SUBPATH/.env"
-          env_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH" "$basedir/.env")
-          ln -s "$env_target" "$workdir/$STANDALONE_SUBPATH/.env"
-          mkdir -p "$workdir/$STANDALONE_SUBPATH/.next"
-          rm -rf "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          cache_target=$(realpath --relative-to="$workdir/$STANDALONE_SUBPATH/.next" "$basedir/.cache")
-          ln -s "$cache_target" "$workdir/$STANDALONE_SUBPATH/.next/cache"
-          YOHaku_CONTAINER="yohaku"
-          previous_target="$(readlink "$basedir/current" 2>/dev/null || true)"
-          new_target="releases/$RUN_NUMBER/$STANDALONE_SUBPATH"
+          path: |
+            assets
+          key: ${{ github.run_number }}-release
+      - name: Move assets to root
+        run: mv assets/release.zip release.zip
 
-          rollback() {
-            if [ -n "$previous_target" ]; then
-              echo "Rolling back to $previous_target"
-              ln -sfn "$previous_target" "$basedir/current"
-              docker restart "$YOHaku_CONTAINER"
+      - name: Prepare standalone PM2 config
+        run: cp pm2/ecosystem.config.js ecosystem.config.js
+
+      - name: copy file via ssh password
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          port: ${{ secrets.PORT }}
+          source: 'release.zip'
+          target: '/tmp/yohaku'
+
+      - name: copy PM2 config via ssh password
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          port: ${{ secrets.PORT }}
+          source: 'ecosystem.config.js'
+          target: '/tmp/yohaku'
+
+      - name: Exec deploy script with SSH
+        uses: appleboy/ssh-action@master
+
+        with:
+          command_timeout: 5m
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            export PATH=/usr/local/bin:$PATH
+            basedir=$HOME/yohaku
+            workdir=$basedir/${{ github.run_number }}
+            mkdir -p $workdir
+            mkdir -p $basedir/.cache
+            mv /tmp/yohaku/release.zip $workdir/release.zip
+            install -m 644 /tmp/yohaku/ecosystem.config.js $basedir/ecosystem.config.js
+            cd $workdir
+            unzip -qq -o $workdir/release.zip
+            rm -r /tmp/yohaku
+            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.env
+            ln -s $HOME/yohaku/.env $workdir/${{ env.STANDALONE_SUBPATH }}/.env
+            export NEXT_SHARP_PATH=$(dirname "$(readlink -f "$(command -v node)")")/../lib/node_modules/sharp
+            # https://github.com/Unitech/pm2/issues/3054
+            # symlink workdir node entry file to basedir
+            ln -sf $workdir/${{ env.STANDALONE_SUBPATH }}/server.js $basedir/server.js
+            mkdir -p $workdir/${{ env.STANDALONE_SUBPATH }}/.next
+            rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
+            ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
+            cd $basedir
+            if pm2 describe Yohaku >/dev/null 2>&1; then
+              pm2 reload ecosystem.config.js --update-env
+            else
+              pm2 start ecosystem.config.js --update-env
             fi
-          }
-
-          ln -sfn "$new_target" "$basedir/current"
-          ln -sfn "current/server.js" "$basedir/server.js"
-
-          if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$YOHaku_CONTAINER"; then
-            echo "Yohaku container not found: $YOHaku_CONTAINER"
+            for attempt in $(seq 1 24); do
+              if curl -fsS --max-time 5 http://127.0.0.1:2323/ >/dev/null; then
+                pm2 save
+                rm "$workdir/release.zip"
+                echo "Deployed successfully"
+                exit 0
+              fi
+              sleep 5
+            done
+            pm2 logs Yohaku --lines 30 --nostream
             exit 1
-          fi
-
-          docker restart "$YOHaku_CONTAINER"
-
-          healthy=false
-          for attempt in $(seq 1 36); do
-            if curl -fsS --max-time 5 http://127.0.0.1:2323/ >/dev/null; then
-              healthy=true
-              break
-            fi
-            sleep 5
-          done
-
-          if [ "$healthy" != true ]; then
-            echo "Yohaku release $RUN_NUMBER failed its local health check"
-            docker logs --tail=150 "$YOHaku_CONTAINER"
-            rollback
-            exit 1
-          fi
-
-          if ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/" >/dev/null || \
-             ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/qaqdmin" >/dev/null || \
-             ! curl -fsS --retry 3 --max-time 15 "$BASE_URL/api/v3/ping"; then
-            echo 'Public health check failed'
-            rollback
-            exit 1
-          fi
-
-          find "$basedir/releases" -mindepth 1 -maxdepth 1 -type d | sort -Vr | tail -n +6 | xargs -r rm -rf
-          echo "Deployed and verified Yohaku release $RUN_NUMBER at $basedir/current"
-          REMOTE
 
   store:
+    permissions:
+      contents: write
     name: Store artifact commit version
     runs-on: ubuntu-latest
     needs: [deploy, build]
@@ -319,20 +262,17 @@ jobs:
           echo "Branch from build: $BRANCH"
       - name: Write hash to file
         env:
-          BUILD_SIGNATURE: ${{ needs.build.outputs.build_signature }}
+          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
 
-        run: echo "$BUILD_SIGNATURE" > ${{ env.HASH_FILE }}
+        run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
       - name: Commit files
         run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add -- "$HASH_FILE"
-          if ! git diff --cached --quiet -- "$HASH_FILE"; then
-            git commit -m "Update hash file"
-          fi
+          git add ${{ env.HASH_FILE }}
+          git commit -a -m "Update hash file"
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-
