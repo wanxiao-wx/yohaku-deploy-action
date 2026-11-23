@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: '0 19 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: Build again even if upstream has not changed
+        type: boolean
+        default: false
 
   repository_dispatch:
     types: [trigger-workflow]
@@ -60,12 +65,13 @@ jobs:
         id: use_content
         env:
           FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
+          FORCE_BUILD: ${{ inputs.force || false }}
         run: |
           file_hash=$FILE_HASH
           current_hash=$(git rev-parse --short HEAD)
           echo "File Hash: $file_hash"
           echo "Current Git Hash: $current_hash"
-          if [ "$file_hash" == "$current_hash" ]; then
+          if [ "$FORCE_BUILD" != true ] && [ "$file_hash" == "$current_hash" ]; then
             echo "Hashes match. Stopping workflow."
             echo "canceled=true" >> $GITHUB_OUTPUT
           else
@@ -169,7 +175,7 @@ jobs:
       - name: Prepare standalone PM2 config
         run: cp pm2/ecosystem.config.js ecosystem.config.js
 
-      - name: copy file via ssh password
+      - name: Copy release via SSH
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
@@ -180,7 +186,7 @@ jobs:
           source: 'release.zip'
           target: '/tmp/yohaku'
 
-      - name: copy PM2 config via ssh password
+      - name: Copy PM2 config via SSH
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
@@ -229,7 +235,9 @@ jobs:
               pm2 start ecosystem.config.js --update-env
             fi
             for attempt in $(seq 1 24); do
-              if curl -fsS --max-time 5 http://127.0.0.1:2323/ >/dev/null; then
+              status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+                -H 'Host: shiyi.dev' -H 'X-Forwarded-Proto: https' http://localhost:2323/ || true)
+              if [ "$status" = 200 ]; then
                 pm2 save
                 rm "$workdir/release.zip"
                 echo "Deployed successfully"
@@ -270,7 +278,9 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add ${{ env.HASH_FILE }}
-          git commit -a -m "Update hash file"
+          if ! git diff --cached --quiet; then
+            git commit -m "Update hash file"
+          fi
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
